@@ -1,7 +1,7 @@
 package com.platform.subscription_manager.user.infrastructure.web;
 
-import com.platform.subscription_manager.user.domain.CreateUserDTO;
-import com.platform.subscription_manager.user.domain.UserResponseDTO;
+import com.platform.subscription_manager.user.application.dtos.CreateUserDTO;
+import com.platform.subscription_manager.user.application.dtos.UserResponseDTO;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;

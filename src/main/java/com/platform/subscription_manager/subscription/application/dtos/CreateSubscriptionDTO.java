@@ -1,4 +1,4 @@
-package com.platform.subscription_manager.subscription.domain;
+package com.platform.subscription_manager.subscription.application.dtos;
 
 import com.platform.subscription_manager.subscription.domain.enums.Plan;
 

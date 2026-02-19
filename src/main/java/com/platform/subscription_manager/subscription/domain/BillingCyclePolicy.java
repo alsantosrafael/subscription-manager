@@ -1,10 +1,13 @@
-package com.platform.subscription_manager.shared.utils;
+package com.platform.subscription_manager.subscription.domain;
 
 import java.time.LocalDateTime;
 import java.time.YearMonth;
 import java.util.concurrent.ThreadLocalRandom;
 
-public class DateHelper {
+/**
+ * Domain Policy responsible for calculating the next billing cycle date.
+ */
+public class BillingCyclePolicy {
 
 	/**
 	 * Generates the next expiring date based on a previous date, adding exactly
@@ -22,7 +25,7 @@ public class DateHelper {
 	 * @return a new {@link LocalDateTime} one calendar month after {@code previousDate},
 	 *         with a small random hour jitter applied
 	 */
-	public static LocalDateTime nextExpiringDate(LocalDateTime previousDate) {
+	public static LocalDateTime calculateNextExpiration(LocalDateTime previousDate) {
 		int year  = previousDate.getYear();
 		int month = previousDate.getMonthValue();
 		int day   = previousDate.getDayOfMonth();
@@ -37,7 +40,7 @@ public class DateHelper {
 			base = base.withDayOfMonth(lastDay);
 		}
 
-		long jitterHours = ThreadLocalRandom.current().nextLong(0, 7); // [0, 6]
+		long jitterHours = ThreadLocalRandom.current().nextLong(0, 7); // [0, 6] hours
 		return base.plusHours(jitterHours);
 	}
 }

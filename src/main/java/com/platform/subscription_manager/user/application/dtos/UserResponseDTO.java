@@ -1,4 +1,4 @@
-package com.platform.subscription_manager.user.domain;
+package com.platform.subscription_manager.user.application.dtos;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
