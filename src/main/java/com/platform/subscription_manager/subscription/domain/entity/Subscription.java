@@ -22,8 +22,8 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "subscriptions", indexes = {
-		@Index(name = "idx_sub_renewal_sweep", columnList = "status, expiring_date"),
-		@Index(name = "idx_sub_api_read", columnList = "user_id")
+	@Index(name = "idx_sub_renewal_sweep", columnList = "status, expiring_date, last_billing_attempt"),
+	@Index(name = "idx_sub_api_read", columnList = "user_id")
 })
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
@@ -56,8 +56,11 @@ public class Subscription {
 	@Column(name = "auto_renew", nullable = false)
 	private boolean autoRenew;
 
-	@Column(name = "billing_failed_attempts", nullable = false)
-	private int billingFailedAttempts;
+	@Column(name = "billing_attempts", nullable = false)
+	private int billingAttempts;
+
+	@Column(name = "last_billing_attempt")
+	private LocalDateTime lastBillingAttempt;
 
 	@Version
 	private Long version;
@@ -71,7 +74,7 @@ public class Subscription {
 		sub.startDate = LocalDateTime.now();
 		sub.expiringDate = BillingCyclePolicy.calculateNextExpiration(sub.startDate);
 		sub.autoRenew = true;
-		sub.billingFailedAttempts = 0;
+		sub.billingAttempts = 0;
 		return sub;
 	}
 
@@ -84,9 +87,11 @@ public class Subscription {
 		this.status = SubscriptionStatus.SUSPENDED;
 	}
 
-	public void recordPaymentFailure() {
-		this.billingFailedAttempts++;
-		if (this.billingFailedAttempts >= 3) {
+	public void recordPaymentFailure(int maxAttemptsAllowed) {
+		this.billingAttempts++;
+		this.lastBillingAttempt = LocalDateTime.now();
+
+		if (this.billingAttempts >= maxAttemptsAllowed) {
 			this.status = SubscriptionStatus.SUSPENDED;
 			this.autoRenew = false;
 		}
@@ -94,8 +99,28 @@ public class Subscription {
 
 	public void renew() {
 		this.expiringDate = BillingCyclePolicy.calculateNextExpiration(this.expiringDate);
-		this.billingFailedAttempts = 0;
+		this.billingAttempts = 0;
 		this.status = SubscriptionStatus.ACTIVE;
 		this.autoRenew = true;
+	}
+	public void markBillingAttempt() {
+		this.lastBillingAttempt = LocalDateTime.now();
+	}
+
+	public void registerBillingSuccess(LocalDateTime newExpiringDate) {
+		this.status = SubscriptionStatus.ACTIVE;
+		this.expiringDate = newExpiringDate;
+		this.billingAttempts = 0;
+		this.lastBillingAttempt = null;
+	}
+
+	public void registerBillingFailure() {
+		this.billingAttempts++;
+		this.lastBillingAttempt = LocalDateTime.now();
+
+		if (this.billingAttempts >= 3) {
+			this.status = SubscriptionStatus.SUSPENDED;
+			this.autoRenew = false;
+		}
 	}
 }

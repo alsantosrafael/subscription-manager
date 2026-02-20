@@ -112,7 +112,7 @@ class SubscriptionServiceTest {
     class Cancel {
 
         @Test
-        @DisplayName("Sets autoRenew to false on the subscription")
+        @DisplayName("Sets autoRenew to false; status stays ACTIVE until scheduler expires it")
         void happyPath() {
             var subscription = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
@@ -122,6 +122,7 @@ class SubscriptionServiceTest {
             subscriptionService.cancel(SUBSCRIPTION_ID, USER_ID);
 
             assertFalse(subscription.isAutoRenew());
+            assertEquals(SubscriptionStatus.ACTIVE, subscription.getStatus());
             verify(subscriptionRepository).save(subscription);
         }
 

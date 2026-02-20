@@ -7,7 +7,7 @@ CREATE TABLE subscriptions (
                                start_date TIMESTAMP NOT NULL,
                                expiring_date TIMESTAMP NOT NULL,
                                auto_renew BOOLEAN NOT NULL,
-                               billing_failed_attempts INT DEFAULT 0 NOT NULL,
+                               billing_attempts INT DEFAULT 0 NOT NULL,
                                version BIGINT DEFAULT 0,
                                CONSTRAINT fk_subscription_user FOREIGN KEY (user_id) REFERENCES users(id)
 );
