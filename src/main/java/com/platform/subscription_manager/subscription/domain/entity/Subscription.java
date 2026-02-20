@@ -96,5 +96,6 @@ public class Subscription {
 		this.expiringDate = BillingCyclePolicy.calculateNextExpiration(this.expiringDate);
 		this.billingFailedAttempts = 0;
 		this.status = SubscriptionStatus.ACTIVE;
+		this.autoRenew = true;
 	}
 }

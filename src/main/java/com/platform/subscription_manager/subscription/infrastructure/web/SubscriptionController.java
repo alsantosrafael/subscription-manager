@@ -3,6 +3,7 @@ package com.platform.subscription_manager.subscription.infrastructure.web;
 import com.platform.subscription_manager.subscription.application.dtos.CreateSubscriptionDTO;
 import com.platform.subscription_manager.subscription.application.dtos.SubscriptionResponseDTO;
 import com.platform.subscription_manager.subscription.application.services.SubscriptionService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -22,7 +23,7 @@ public class SubscriptionController {
 	private final SubscriptionService subscriptionService;
 
 	@PostMapping
-	public ResponseEntity<SubscriptionResponseDTO> create(@RequestBody CreateSubscriptionDTO subscriptionPayload) {
+	public ResponseEntity<SubscriptionResponseDTO> create(@Valid @RequestBody CreateSubscriptionDTO subscriptionPayload) {
 		return ResponseEntity.status(201).body(subscriptionService.create(subscriptionPayload));
 	}
 
