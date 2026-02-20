@@ -1,7 +1,7 @@
 package com.platform.subscription_manager.subscription.application.services;
 
-import com.platform.subscription_manager.shared.config.ResourceNotFoundException;
-import com.platform.subscription_manager.shared.config.UnprocessableEntityException;
+import com.platform.subscription_manager.shared.ResourceNotFoundException;
+import com.platform.subscription_manager.shared.UnprocessableEntityException;
 import com.platform.subscription_manager.subscription.application.dtos.CreateSubscriptionDTO;
 import com.platform.subscription_manager.subscription.application.dtos.SubscriptionResponseDTO;
 import com.platform.subscription_manager.subscription.domain.entity.Subscription;

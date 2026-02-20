@@ -1,6 +1,6 @@
 package com.platform.subscription_manager.user.application.services;
 
-import com.platform.subscription_manager.shared.config.ConflictException;
+import com.platform.subscription_manager.shared.ConflictException;
 import com.platform.subscription_manager.user.UserFacade;
 import com.platform.subscription_manager.user.application.dtos.CreateUserDTO;
 import com.platform.subscription_manager.user.domain.entity.User;
