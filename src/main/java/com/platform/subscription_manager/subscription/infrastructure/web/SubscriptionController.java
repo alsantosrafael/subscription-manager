@@ -2,41 +2,35 @@ package com.platform.subscription_manager.subscription.infrastructure.web;
 
 import com.platform.subscription_manager.subscription.application.dtos.CreateSubscriptionDTO;
 import com.platform.subscription_manager.subscription.application.dtos.SubscriptionResponseDTO;
-import com.platform.subscription_manager.subscription.domain.BillingCyclePolicy;
-import com.platform.subscription_manager.subscription.domain.enums.SubscriptionStatus;
+import com.platform.subscription_manager.subscription.application.services.SubscriptionService;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-import java.time.LocalDateTime;
 import java.util.UUID;
 
 @RestController
 @RequestMapping("/v1/subscriptions")
+@RequiredArgsConstructor
 public class SubscriptionController {
+	private final SubscriptionService subscriptionService;
 
 	@PostMapping
 	public ResponseEntity<SubscriptionResponseDTO> create(@RequestBody CreateSubscriptionDTO subscriptionPayload) {
-		LocalDateTime now = LocalDateTime.now();
-		// TODO: check if customer exists 404
-		// TODO: check if there are any ACTIVE subscriptions attached to the user (user may only have one) 422
-		// TODO: store paymentToken on Subscription table
-		return ResponseEntity.status(201).body(new SubscriptionResponseDTO(
-			UUID.randomUUID(),
-			SubscriptionStatus.ACTIVE,
-			subscriptionPayload.plan(),
-			now,
-			BillingCyclePolicy.calculateNextExpiration(now),
-			true
-		));
+		return ResponseEntity.status(201).body(subscriptionService.create(subscriptionPayload));
 	}
 
 	@PatchMapping("/{subscriptionId}/cancel")
 	public ResponseEntity<Void> cancel(
 		@PathVariable("subscriptionId") UUID subscriptionId,
 		@RequestHeader("X-User-Id") UUID userId) {
-		// TODO: check if customer exists 422
-		// TODO: check if subscription exists and is attached to userId -> 422 / 403
-		// TODO: Update autoRenew to false and status to CANCELED
+		subscriptionService.cancel(subscriptionId, userId);
 		return ResponseEntity.noContent().build();
 	}
 
