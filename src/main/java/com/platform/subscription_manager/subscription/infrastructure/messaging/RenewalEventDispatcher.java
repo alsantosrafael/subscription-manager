@@ -13,9 +13,9 @@ public class RenewalEventDispatcher {
 
 	private static final Logger log = LoggerFactory.getLogger(RenewalEventDispatcher.class);
 	private static final String TOPIC_NAME = "subscription.renewals";
-	private final KafkaTemplate<String, Object> kafkaTemplate;
+	private final KafkaTemplate<Object, Object> kafkaTemplate;
 
-	public RenewalEventDispatcher(KafkaTemplate<String, Object> kafkaTemplate) {
+	public RenewalEventDispatcher(KafkaTemplate<Object, Object> kafkaTemplate) {
 		this.kafkaTemplate = kafkaTemplate;
 	}
 	// Annotation responsible for avoiding dual-write considering modulith outbox transactional and threads (async)

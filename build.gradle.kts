@@ -52,6 +52,9 @@ dependencies {
 	implementation("net.javacrumbs.shedlock:shedlock-provider-jdbc-template:5.13.0")
 	// Kafka
 	implementation("org.springframework.kafka:spring-kafka")
+	implementation("org.springframework.modulith:spring-modulith-events-kafka")
+	// Wiremock
+	implementation("org.wiremock:wiremock-standalone:3.5.2")
 }
 
 dependencyManagement {

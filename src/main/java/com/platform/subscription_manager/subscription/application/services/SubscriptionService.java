@@ -12,6 +12,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -53,6 +54,18 @@ public class SubscriptionService {
 		subscription.cancelRenewal();
 
 		subscriptionRepository.save(subscription);
+	}
+
+	public Optional<SubscriptionResponseDTO> get(UUID subscriptionId) {
+		return subscriptionRepository.findById(subscriptionId)
+			.map(sub -> new SubscriptionResponseDTO(
+				sub.getId(),
+				sub.getStatus(),
+				sub.getPlan(),
+				sub.getStartDate(),
+				sub.getExpiringDate(),
+				sub.isAutoRenew()
+			));
 	}
 
 }

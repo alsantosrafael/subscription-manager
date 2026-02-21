@@ -21,6 +21,7 @@ class SubscriptionTest {
 
 	private static final UUID USER_ID = UUID.randomUUID();
 	private static final String TOKEN  = "tok_test_abc123";
+	private static final int MAX_ATTEMPTS = 3;
 
 	@Nested
 	@DisplayName("Subscription.create()")
@@ -87,7 +88,8 @@ class SubscriptionTest {
 		}
 
 		@Test
-		@DisplayName("Calling cancelRenewal twice is idempotent")
+		@DisplayName("Calling cancelRenewal removes autoRenew and allows user to enjoy subscription until the end of " +
+			"cycle")
 		void doubleCancelIsIdempotent() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
@@ -108,7 +110,7 @@ class SubscriptionTest {
 		void firstFailureIncrementsCounterOnly() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.recordPaymentFailure(3);
+			sub.registerPaymentFailure(3);
 
 			assertEquals(1, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
@@ -120,8 +122,8 @@ class SubscriptionTest {
 		void secondFailureStillActive() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.recordPaymentFailure(3);
-			sub.recordPaymentFailure(3);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
 
 			assertEquals(2, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
@@ -132,9 +134,9 @@ class SubscriptionTest {
 		void atThresholdSuspendsSubscription() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.recordPaymentFailure(3);
-			sub.recordPaymentFailure(3);
-			sub.recordPaymentFailure(3);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
 
 			assertEquals(3, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
@@ -146,23 +148,23 @@ class SubscriptionTest {
 		void customThresholdOfOne() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.recordPaymentFailure(1);
+			sub.registerPaymentFailure(1);
 
 			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
 			assertFalse(sub.isAutoRenew());
 		}
 
 		@Test
-		@DisplayName("Beyond threshold — keeps SUSPENDED and keeps incrementing the counter")
+		@DisplayName("Beyond threshold — keeps SUSPENDED and stops incrementing the counter")
 		void beyondThresholdKeepsSuspended() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.recordPaymentFailure(3);
-			sub.recordPaymentFailure(3);
-			sub.recordPaymentFailure(3);
-			sub.recordPaymentFailure(3);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
 
-			assertEquals(4, sub.getBillingAttempts());
+			assertEquals(3, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
 		}
 
@@ -171,39 +173,9 @@ class SubscriptionTest {
 		void setsLastBillingAttempt() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.recordPaymentFailure(3);
+			sub.registerPaymentFailure(3);
 
 			assertNotNull(sub.getLastBillingAttempt());
-		}
-	}
-
-	@Nested
-	@DisplayName("registerBillingFailure()")
-	class RegisterBillingFailure {
-
-		@Test
-		@DisplayName("First failure increments counter and sets lastBillingAttempt; still ACTIVE")
-		void firstFailureStillActive() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-
-			sub.registerBillingFailure();
-
-			assertEquals(1, sub.getBillingAttempts());
-			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
-			assertNotNull(sub.getLastBillingAttempt());
-		}
-
-		@Test
-		@DisplayName("Third failure suspends and disables autoRenew")
-		void thirdFailureSuspends() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-
-			sub.registerBillingFailure();
-			sub.registerBillingFailure();
-			sub.registerBillingFailure();
-
-			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
-			assertFalse(sub.isAutoRenew());
 		}
 	}
 
@@ -215,7 +187,7 @@ class SubscriptionTest {
 		@DisplayName("Sets status to ACTIVE and updates expiringDate")
 		void setsActiveAndUpdatesExpiringDate() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerBillingFailure();
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
 			var newExpiry = LocalDateTime.now().plusMonths(1);
 
 			sub.registerBillingSuccess(newExpiry);
@@ -228,8 +200,8 @@ class SubscriptionTest {
 		@DisplayName("Resets billingAttempts to 0")
 		void resetsBillingAttempts() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerBillingFailure();
-			sub.registerBillingFailure();
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
 
 			sub.registerBillingSuccess(LocalDateTime.now().plusMonths(1));
 
@@ -240,7 +212,7 @@ class SubscriptionTest {
 		@DisplayName("Clears lastBillingAttempt")
 		void clearsLastBillingAttempt() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerBillingFailure();
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
 
 			sub.registerBillingSuccess(LocalDateTime.now().plusMonths(1));
 
@@ -271,8 +243,8 @@ class SubscriptionTest {
 		@DisplayName("billingFailedAttempts resets to 0")
 		void failedAttemptsResetOnRenewal() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.recordPaymentFailure(3);
-			sub.recordPaymentFailure(3);
+			sub.registerPaymentFailure(3);
+			sub.registerPaymentFailure(3);
 
 			sub.renew();
 
@@ -283,9 +255,9 @@ class SubscriptionTest {
 		@DisplayName("Status is ACTIVE after renewal")
 		void statusIsActiveAfterRenewal() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerBillingFailure();
-			sub.registerBillingFailure();
-			sub.registerBillingFailure();
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS);
 
 			sub.renew();
 

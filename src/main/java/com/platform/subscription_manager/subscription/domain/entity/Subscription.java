@@ -82,9 +82,11 @@ public class Subscription {
 		this.autoRenew = false;
 	}
 
-	public void recordPaymentFailure(int maxAttemptsAllowed) {
-		this.billingAttempts++;
-		this.lastBillingAttempt = LocalDateTime.now();
+	public void registerPaymentFailure(int maxAttemptsAllowed) {
+		if(this.billingAttempts < maxAttemptsAllowed) {
+			this.billingAttempts++;
+			this.lastBillingAttempt = LocalDateTime.now();
+		}
 
 		if (this.billingAttempts >= maxAttemptsAllowed) {
 			this.status = SubscriptionStatus.SUSPENDED;
@@ -107,15 +109,5 @@ public class Subscription {
 		this.expiringDate = newExpiringDate;
 		this.billingAttempts = 0;
 		this.lastBillingAttempt = null;
-	}
-
-	public void registerBillingFailure() {
-		this.billingAttempts++;
-		this.lastBillingAttempt = LocalDateTime.now();
-
-		if (this.billingAttempts >= 3) {
-			this.status = SubscriptionStatus.SUSPENDED;
-			this.autoRenew = false;
-		}
 	}
 }

@@ -6,6 +6,7 @@ import com.platform.subscription_manager.subscription.application.services.Subsc
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,6 +28,13 @@ public class SubscriptionController {
 		return ResponseEntity.status(201).body(subscriptionService.create(subscriptionPayload));
 	}
 
+	@GetMapping("/{subscriptionId}")
+	public ResponseEntity<SubscriptionResponseDTO> get(@PathVariable UUID subscriptionId) {
+		return subscriptionService.get(subscriptionId)
+			.map(ResponseEntity::ok)
+			.orElse(ResponseEntity.notFound().build());
+	}
+
 	@PatchMapping("/{subscriptionId}/cancel")
 	public ResponseEntity<Void> cancel(
 		@PathVariable("subscriptionId") UUID subscriptionId,
@@ -34,5 +42,4 @@ public class SubscriptionController {
 		subscriptionService.cancel(subscriptionId, userId);
 		return ResponseEntity.noContent().build();
 	}
-
 }

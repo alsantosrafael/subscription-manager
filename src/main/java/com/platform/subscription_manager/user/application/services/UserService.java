@@ -1,6 +1,7 @@
 package com.platform.subscription_manager.user.application.services;
 
 import com.platform.subscription_manager.shared.domain.exceptions.ConflictException;
+import com.platform.subscription_manager.shared.domain.exceptions.ResourceNotFoundException;
 import com.platform.subscription_manager.user.UserFacade;
 import com.platform.subscription_manager.user.application.dtos.CreateUserDTO;
 import com.platform.subscription_manager.user.domain.entity.User;
@@ -38,5 +39,18 @@ public class UserService implements UserFacade {
 
 	public boolean exists(UUID userId) {
 		return userRepository.existsById(userId);
+	}
+
+	@Transactional(readOnly = true)
+	public UserResponseDTO getUserById(UUID id) {
+		return userRepository.findById(id)
+			.map(user -> new UserResponseDTO(
+				user.getId(),
+				user.getName(),
+				user.getDocument(),
+				user.getEmail(),
+				user.getCreatedAt()
+			))
+			.orElseThrow(() -> new ResourceNotFoundException("User not found: " + id));
 	}
 }
