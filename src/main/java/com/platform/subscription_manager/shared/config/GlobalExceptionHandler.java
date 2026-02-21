@@ -10,9 +10,9 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-import com.platform.subscription_manager.shared.ConflictException;
-import com.platform.subscription_manager.shared.ResourceNotFoundException;
-import com.platform.subscription_manager.shared.UnprocessableEntityException;
+import com.platform.subscription_manager.shared.domain.exceptions.ConflictException;
+import com.platform.subscription_manager.shared.domain.exceptions.ResourceNotFoundException;
+import com.platform.subscription_manager.shared.domain.exceptions.UnprocessableEntityException;
 
 import java.util.stream.Collectors;
 

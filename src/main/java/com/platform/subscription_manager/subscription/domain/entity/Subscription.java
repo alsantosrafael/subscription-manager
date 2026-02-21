@@ -82,11 +82,6 @@ public class Subscription {
 		this.autoRenew = false;
 	}
 
-	public void suspendRenewal() {
-		this.autoRenew = false;
-		this.status = SubscriptionStatus.SUSPENDED;
-	}
-
 	public void recordPaymentFailure(int maxAttemptsAllowed) {
 		this.billingAttempts++;
 		this.lastBillingAttempt = LocalDateTime.now();

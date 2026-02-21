@@ -36,7 +36,7 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
 		Pageable pageable
 	);
 	// Revoke canceled subscriptions
-	@Modifying(clearAutomatically = true) // offloading cache upon update
+	@Modifying(clearAutomatically = true) // offloading memory upon update
 	@Query("""
         UPDATE Subscription s 
         SET s.status = 'EXPIRED' 

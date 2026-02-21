@@ -1,7 +1,7 @@
 package com.platform.subscription_manager.subscription.application.services;
 
 
-import com.platform.subscription_manager.subscription.RenewalRequestedEvent;
+import com.platform.subscription_manager.shared.infrastructure.messaging.RenewalRequestedEvent;
 import com.platform.subscription_manager.subscription.domain.entity.Subscription;
 import com.platform.subscription_manager.subscription.domain.repositories.SubscriptionRepository;
 import com.platform.subscription_manager.subscription.domain.enums.SubscriptionStatus;
@@ -27,8 +27,11 @@ public class RenewalOrchestratorService {
 	@Value("${billing.retry.max-attempts:3}")
 	private int maxAttempts;
 
-	@Value("${billing.retry.delay-hours:4}")
+	@Value("${billing.retry.delay-hours:2}")
 	private int retryDelayHours;
+
+	@Value("${billing.retry.delay.enabled:false}")
+	private boolean retryEnabled;
 
 	private final SubscriptionRepository repository;
 	private final ApplicationEventPublisher eventPublisher;
@@ -68,7 +71,7 @@ public class RenewalOrchestratorService {
 			slice = repository.findEligibleForRenewal(
 				SubscriptionStatus.ACTIVE,
 				now,
-				thresholdTime,
+				retryEnabled ? thresholdTime : LocalDateTime.now(),
 				maxAttempts,
 				page
 			);

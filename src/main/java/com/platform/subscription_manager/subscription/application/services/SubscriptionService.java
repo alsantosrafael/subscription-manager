@@ -1,7 +1,7 @@
 package com.platform.subscription_manager.subscription.application.services;
 
-import com.platform.subscription_manager.shared.ResourceNotFoundException;
-import com.platform.subscription_manager.shared.UnprocessableEntityException;
+import com.platform.subscription_manager.shared.domain.exceptions.ResourceNotFoundException;
+import com.platform.subscription_manager.shared.domain.exceptions.UnprocessableEntityException;
 import com.platform.subscription_manager.subscription.application.dtos.CreateSubscriptionDTO;
 import com.platform.subscription_manager.subscription.application.dtos.SubscriptionResponseDTO;
 import com.platform.subscription_manager.subscription.domain.entity.Subscription;
@@ -24,7 +24,6 @@ public class SubscriptionService {
 	@Transactional
 	public SubscriptionResponseDTO create(CreateSubscriptionDTO payload) {
 
-		// 1. Valida se usuário existe (Cross-module call) -> 404
 		if (!userFacade.exists(payload.userId())) {
 			throw new ResourceNotFoundException("User not found");
 		}
@@ -33,7 +32,6 @@ public class SubscriptionService {
 			throw new UnprocessableEntityException("User already has an active subscription");
 		}
 
-		// 3. Aplica a Factory com a Policy de data que fizemos
 		Subscription sub = Subscription.create(payload.userId(), payload.plan(), payload.paymentToken());
 		Subscription savedSub = subscriptionRepository.save(sub);
 
@@ -56,7 +54,5 @@ public class SubscriptionService {
 
 		subscriptionRepository.save(subscription);
 	}
-
-	//TODO: Criar regra para erro de renovação / SUSPEND
 
 }

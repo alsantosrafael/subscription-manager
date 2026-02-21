@@ -1,6 +1,6 @@
 package com.platform.subscription_manager.user.application.services;
 
-import com.platform.subscription_manager.shared.ConflictException;
+import com.platform.subscription_manager.shared.domain.exceptions.ConflictException;
 import com.platform.subscription_manager.user.UserFacade;
 import com.platform.subscription_manager.user.application.dtos.CreateUserDTO;
 import com.platform.subscription_manager.user.domain.entity.User;
@@ -36,7 +36,6 @@ public class UserService implements UserFacade {
 		);
 	}
 
-	// Método que o módulo vizinho (Subscription) vai chamar!
 	public boolean exists(UUID userId) {
 		return userRepository.existsById(userId);
 	}

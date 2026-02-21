@@ -1,9 +1,9 @@
 package com.platform.subscription_manager.shared;
 
-import com.platform.subscription_manager.shared.ConflictException;
+import com.platform.subscription_manager.shared.domain.exceptions.ConflictException;
 import com.platform.subscription_manager.shared.config.GlobalExceptionHandler;
-import com.platform.subscription_manager.shared.ResourceNotFoundException;
-import com.platform.subscription_manager.shared.UnprocessableEntityException;
+import com.platform.subscription_manager.shared.domain.exceptions.ResourceNotFoundException;
+import com.platform.subscription_manager.shared.domain.exceptions.UnprocessableEntityException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;

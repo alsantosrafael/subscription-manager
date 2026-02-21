@@ -33,7 +33,7 @@ class SubscriptionTest {
 
 			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
 			assertTrue(sub.isAutoRenew());
-			assertEquals(0, sub.getBillingFailedAttempts());
+			assertEquals(0, sub.getBillingAttempts());
 		}
 
 		@Test
@@ -100,34 +100,6 @@ class SubscriptionTest {
 	}
 
 	@Nested
-	@DisplayName("suspendRenewal()")
-	class SuspendRenewal {
-
-		@Test
-		@DisplayName("Sets status to SUSPENDED and autoRenew to false")
-		void suspendSetsStatusAndDisablesAutoRenew() {
-			Subscription sub = Subscription.create(USER_ID, Plan.PREMIUM, TOKEN);
-
-			sub.suspendRenewal();
-
-			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
-			assertFalse(sub.isAutoRenew());
-		}
-
-		@Test
-		@DisplayName("Calling suspendRenewal twice is idempotent")
-		void doubleSuspendIsIdempotent() {
-			Subscription sub = Subscription.create(USER_ID, Plan.PREMIUM, TOKEN);
-
-			sub.suspendRenewal();
-			sub.suspendRenewal();
-
-			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
-			assertFalse(sub.isAutoRenew());
-		}
-	}
-
-	@Nested
 	@DisplayName("recordPaymentFailure(maxAttemptsAllowed)")
 	class RecordPaymentFailure {
 
@@ -138,7 +110,7 @@ class SubscriptionTest {
 
 			sub.recordPaymentFailure(3);
 
-			assertEquals(1, sub.getBillingFailedAttempts());
+			assertEquals(1, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
 			assertTrue(sub.isAutoRenew());
 		}
@@ -151,7 +123,7 @@ class SubscriptionTest {
 			sub.recordPaymentFailure(3);
 			sub.recordPaymentFailure(3);
 
-			assertEquals(2, sub.getBillingFailedAttempts());
+			assertEquals(2, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
 		}
 
@@ -164,7 +136,7 @@ class SubscriptionTest {
 			sub.recordPaymentFailure(3);
 			sub.recordPaymentFailure(3);
 
-			assertEquals(3, sub.getBillingFailedAttempts());
+			assertEquals(3, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
 			assertFalse(sub.isAutoRenew());
 		}
@@ -190,7 +162,7 @@ class SubscriptionTest {
 			sub.recordPaymentFailure(3);
 			sub.recordPaymentFailure(3);
 
-			assertEquals(4, sub.getBillingFailedAttempts());
+			assertEquals(4, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
 		}
 
@@ -216,7 +188,7 @@ class SubscriptionTest {
 
 			sub.registerBillingFailure();
 
-			assertEquals(1, sub.getBillingFailedAttempts());
+			assertEquals(1, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
 			assertNotNull(sub.getLastBillingAttempt());
 		}
@@ -253,15 +225,15 @@ class SubscriptionTest {
 		}
 
 		@Test
-		@DisplayName("Resets billingFailedAttempts to 0")
-		void resetsBillingFailedAttempts() {
+		@DisplayName("Resets billingAttempts to 0")
+		void resetsBillingAttempts() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 			sub.registerBillingFailure();
 			sub.registerBillingFailure();
 
 			sub.registerBillingSuccess(LocalDateTime.now().plusMonths(1));
 
-			assertEquals(0, sub.getBillingFailedAttempts());
+			assertEquals(0, sub.getBillingAttempts());
 		}
 
 		@Test
@@ -304,14 +276,16 @@ class SubscriptionTest {
 
 			sub.renew();
 
-			assertEquals(0, sub.getBillingFailedAttempts());
+			assertEquals(0, sub.getBillingAttempts());
 		}
 
 		@Test
 		@DisplayName("Status is ACTIVE after renewal")
 		void statusIsActiveAfterRenewal() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.suspendRenewal();
+			sub.registerBillingFailure();
+			sub.registerBillingFailure();
+			sub.registerBillingFailure();
 
 			sub.renew();
 

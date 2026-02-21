@@ -1,7 +1,7 @@
 package com.platform.subscription_manager.subscription.infrastructure.messaging;
 
 
-import com.platform.subscription_manager.subscription.RenewalRequestedEvent;
+import com.platform.subscription_manager.shared.infrastructure.messaging.RenewalRequestedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
