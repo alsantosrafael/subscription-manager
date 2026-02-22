@@ -11,48 +11,56 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 public interface SubscriptionRepository extends JpaRepository<Subscription, UUID> {
 
-	boolean existsByUserIdAndStatus(UUID userId, SubscriptionStatus status);
+	Optional<Subscription> findByUserId(UUID userId);
 
 	Optional<Subscription> findByIdAndUserId(UUID id, UUID userId);
 
-	// Batch collection of renewals
 	@Query("""
-        SELECT s FROM Subscription s 
-        WHERE s.status = :status 
-          AND s.autoRenew = true 
-          AND s.expiringDate <= :now 
-          AND s.billingAttempts < :maxAttempts 
+        SELECT s.id FROM Subscription s
+        WHERE s.status = :status
+          AND s.autoRenew = true
+          AND s.expiringDate <= :now
+          AND s.billingAttempts < :maxAttempts
           AND s.nextRetryAt <= :now
         """)
-	Slice<Subscription> findEligibleForRenewal(
+	Slice<UUID> findEligibleForRenewal(
 		@Param("status") SubscriptionStatus status,
 		@Param("now") LocalDateTime now,
 		@Param("maxAttempts") int maxAttempts,
 		Pageable pageable
 	);
-	// Revoke canceled subscriptions
+
 	@Transactional
-	@Modifying(clearAutomatically = true) // offloading memory upon update
+	@Modifying(clearAutomatically = true)
 	@Query("""
-        UPDATE Subscription s 
-        SET s.status = 'CANCELED' 
-        WHERE s.status in ('ACTIVE')
-        AND s.autoRenew = false 
-        AND s.expiringDate <= :now
+        UPDATE Subscription s
+        SET s.status = 'INACTIVE'
+        WHERE s.status = 'CANCELED'
+          AND s.autoRenew = false
+          AND s.expiringDate <= :now
     """)
 	int expireCanceledSubscriptions(@Param("now") LocalDateTime now);
 
 	/**
-	 * RENOVAÇÃO ATÔMICA (O xeque-mate na duplicação)
-	 * Este método garante que a assinatura só avance se ela ainda estiver no ciclo
-	 * que originou a cobrança.
-	 * * @return 1 se renovou com sucesso, 0 se a assinatura já foi renovada por outra thread.
+	 * Returns (id, userId, plan, startDate, expiringDate) for CANCELED subscriptions that
+	 * expireCanceledSubscriptions will transition to INACTIVE. Called before the bulk UPDATE
+	 * so the orchestrator can publish complete cache events — avoids null fields in Redis.
 	 */
+	@Query("""
+        SELECT s.id, s.userId, s.plan, s.startDate, s.expiringDate FROM Subscription s
+        WHERE s.status = 'CANCELED'
+          AND s.autoRenew = false
+          AND s.expiringDate <= :now
+    """)
+	List<Object[]> findExpiringSubscriptionIds(@Param("now") LocalDateTime now);
+
+	@Transactional
 	@Modifying(clearAutomatically = true)
 	@Query("""
         UPDATE Subscription s 
@@ -71,21 +79,55 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
 	);
 
 	/**
-	 * REGISTRO DE FALHA ATÔMICO
-	 * Evita que retries atrasados incrementem o contador de forma errada.
+	 * Atomically increments the failure counter and stamps nextRetryAt for the retry backoff.
+	 * Uses no @Version field — safe to call from a large Kafka batch without
+	 * OptimisticLockException blowing up the entire batch.
+	 * The WHERE guard (expiringDate = :currentExpiringDate AND status = 'ACTIVE') ensures
+	 * late or duplicate result events are silently ignored.
 	 */
+	@Transactional
 	@Modifying(clearAutomatically = true)
 	@Query("""
-        UPDATE Subscription s 
+        UPDATE Subscription s
         SET s.billingAttempts = s.billingAttempts + 1,
-            s.lastBillingAttempt = :now
-        WHERE s.id = :id 
+            s.lastBillingAttempt = :now,
+            s.nextRetryAt = :nextRetryAt
+        WHERE s.id = :id
           AND s.expiringDate = :currentExpiringDate
           AND s.status = 'ACTIVE'
+          AND s.billingAttempts = :expectedAttempts
     """)
 	int incrementFailureAtomic(
 		@Param("id") UUID id,
 		@Param("currentExpiringDate") LocalDateTime currentExpiringDate,
-		@Param("now") LocalDateTime now
+		@Param("now") LocalDateTime now,
+		@Param("nextRetryAt") LocalDateTime nextRetryAt,
+		@Param("expectedAttempts") int expectedAttempts
+	);
+
+	/**
+	 * Atomically suspends a subscription once the billing failure threshold is reached.
+	 * Sets status = SUSPENDED, autoRenew = false, nextRetryAt = null.
+	 * The WHERE guard ensures this is idempotent and only fires once.
+	 */
+	@Transactional
+	@Modifying(clearAutomatically = true)
+	@Query("""
+        UPDATE Subscription s
+        SET s.status = 'SUSPENDED',
+            s.autoRenew = false,
+            s.nextRetryAt = null,
+            s.lastBillingAttempt = :now,
+            s.billingAttempts = s.billingAttempts + 1
+        WHERE s.id = :id
+          AND s.expiringDate = :currentExpiringDate
+          AND s.status = 'ACTIVE'
+          AND s.billingAttempts = :expectedAttempts
+    """)
+	int suspendSubscriptionAtomic(
+		@Param("id") UUID id,
+		@Param("currentExpiringDate") LocalDateTime currentExpiringDate,
+		@Param("now") LocalDateTime now,
+		@Param("expectedAttempts") int expectedAttempts
 	);
 }

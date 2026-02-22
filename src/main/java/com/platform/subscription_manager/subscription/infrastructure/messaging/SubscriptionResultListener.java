@@ -1,11 +1,11 @@
 package com.platform.subscription_manager.subscription.infrastructure.messaging;
 
 import com.platform.subscription_manager.shared.domain.BillingHistoryStatus;
+import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import com.platform.subscription_manager.shared.infrastructure.messaging.BillingResultEvent;
 import com.platform.subscription_manager.shared.infrastructure.messaging.SubscriptionUpdatedEvent;
 import com.platform.subscription_manager.subscription.domain.BillingCyclePolicy;
 import com.platform.subscription_manager.subscription.domain.entity.Subscription;
-import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import com.platform.subscription_manager.subscription.domain.repositories.SubscriptionRepository;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
@@ -53,9 +53,8 @@ public class SubscriptionResultListener {
 				for (var record : records) {
 					processSingleResult(record.value(), cacheEvents);
 				}
+				cacheEvents.forEach(eventPublisher::publishEvent);
 			});
-			// Publish AFTER the transaction commits so @TransactionalEventListener(AFTER_COMMIT) fires
-			cacheEvents.forEach(eventPublisher::publishEvent);
 			ack.acknowledge();
 			log.info("✅ [SUBSCRIPTION] Lote de {} resultados processado e commitado.", records.size());
 		} catch (Exception ex) {
@@ -76,7 +75,7 @@ public class SubscriptionResultListener {
 		if (BillingHistoryStatus.SUCCESS.equals(event.status())) {
 			handleSuccess(sub, event, cacheEvents);
 		} else {
-			handleFailure(sub, cacheEvents);
+			handleFailure(sub, event, cacheEvents);
 		}
 	}
 
@@ -93,17 +92,31 @@ public class SubscriptionResultListener {
 		}
 	}
 
-	private void handleFailure(Subscription sub, List<SubscriptionUpdatedEvent> cacheEvents) {
-		sub.registerPaymentFailure(maxAttempts, baseDelayMinutes);
-		repository.save(sub);
+	private void handleFailure(Subscription sub, BillingResultEvent event, List<SubscriptionUpdatedEvent> cacheEvents) {
+		LocalDateTime now = LocalDateTime.now();
+		int currentAttempts = sub.getBillingAttempts();
+		int attemptsAfter = currentAttempts + 1;
 
-		if (sub.getStatus() != SubscriptionStatus.ACTIVE) {
-			log.warn("⚠️ Sub {} suspensa após falhas. Status: {}", sub.getId(), sub.getStatus());
+		SubscriptionStatus resultingStatus;
+		boolean resultingAutoRenew;
+
+		if (attemptsAfter >= maxAttempts) {
+			repository.suspendSubscriptionAtomic(sub.getId(), event.referenceExpiringDate(), now, currentAttempts);
+			resultingStatus = SubscriptionStatus.SUSPENDED;
+			resultingAutoRenew = false;
+			log.warn("🔴 [BILLING] Sub {} SUSPENSA após {} falhas consecutivas. autoRenew=false. Requer reativação manual.",
+				sub.getId(), attemptsAfter);
 		} else {
-			log.warn("⚠️ Sub {} falhou ({} tentativa(s)). Próxima tentativa em: {}", sub.getId(), sub.getBillingAttempts(), sub.getNextRetryAt());
+			long delayMinutes = (long) Math.pow(2, attemptsAfter) * baseDelayMinutes;
+			LocalDateTime nextRetryAt = now.plusMinutes(delayMinutes);
+			repository.incrementFailureAtomic(sub.getId(), event.referenceExpiringDate(), now, nextRetryAt, currentAttempts);
+			resultingStatus = SubscriptionStatus.ACTIVE;
+			resultingAutoRenew = true;
+			log.warn("⚠️ Sub {} falhou ({} tentativa(s)). Próxima tentativa em: {}", sub.getId(), attemptsAfter, nextRetryAt);
 		}
 
-		// Always update the cache — status, billingAttempts and nextRetryAt all changed
-		cacheEvents.add(new SubscriptionUpdatedEvent(sub.getId(), sub.getUserId(), sub.getStatus(), sub.getPlan(), sub.getStartDate(), sub.getExpiringDate(), sub.isAutoRenew()));
+		cacheEvents.add(new SubscriptionUpdatedEvent(
+			sub.getId(), sub.getUserId(), resultingStatus,
+			sub.getPlan(), sub.getStartDate(), sub.getExpiringDate(), resultingAutoRenew));
 	}
 }

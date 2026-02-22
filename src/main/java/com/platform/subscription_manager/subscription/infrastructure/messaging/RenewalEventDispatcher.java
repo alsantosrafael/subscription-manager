@@ -20,20 +20,20 @@ public class RenewalEventDispatcher {
 	}
 	// Annotation responsible for avoiding dual-write considering modulith outbox transactional and threads (async)
 	@ApplicationModuleListener
-	public void onRenewalRequested(RenewalRequestedEvent event) throws InterruptedException {
+	public void onRenewalRequested(RenewalRequestedEvent event) {
 		log.info("🚀 [OUTBOX DISPATCHER] Lendo evento do banco e enviando para o Kafka. Assinatura: {}", event.subscriptionId());
 
 		kafkaTemplate.send(TOPIC_NAME, event.subscriptionId().toString(), event)
 			.whenComplete((result, ex) -> {
 				if (ex != null) {
 					log.error("❌ Falha crítica ao enviar para o Kafka. Modulith fará o retry. Erro: {}", ex.getMessage());
-					throw new RuntimeException("Falha no envio pro Kafka", ex);
 				} else {
 					log.info("✅ Mensagem entregue no tópico [{}] partição [{}] offset [{}]",
 						result.getRecordMetadata().topic(),
 						result.getRecordMetadata().partition(),
 						result.getRecordMetadata().offset());
 				}
-			});
+			})
+			.join();
 	}
 }

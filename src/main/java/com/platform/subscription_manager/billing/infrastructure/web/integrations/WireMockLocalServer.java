@@ -20,7 +20,9 @@ public class WireMockLocalServer {
 
     @PostConstruct
     public void start() {
-        wireMockServer = new WireMockServer(WireMockConfiguration.options().port(8081).containerThreads(100));
+        // containerThreads must exceed the max concurrent billing workers (15 per chunk × possible parallel chunks).
+        // Too low → WireMock cancels connections → RST_STREAM → spurious CB failures.
+        wireMockServer = new WireMockServer(WireMockConfiguration.options().port(8081).containerThreads(200));
         wireMockServer.start();
         WireMock.configureFor("localhost", 8081);
 
@@ -37,7 +39,7 @@ public class WireMockLocalServer {
                 .withRequestBody(WireMock.matchingJsonPath("$.payment_method", WireMock.equalTo("tok_test_success")))
                 .willReturn(WireMock.aResponse()
                         .withFixedDelay(800)
-                        .withStatus(200) // Retorna 200 OK
+                        .withStatus(200)
                         .withHeader("Content-Type", "application/json")
                         .withBody("""
                                 {
@@ -47,13 +49,14 @@ public class WireMockLocalServer {
                                 """)));
 
         // =====================================================================
-        // 2. MOCK DE FALHA ABSOLUTA (Cartão Bloqueado)
+        // 2. MOCK DE FALHA ABSOLUTA (Cartão Bloqueado para sempre)
+        // Used by tok_test_always_fail — sub will be SUSPENDED after 3 attempts.
         // =====================================================================
         WireMock.stubFor(WireMock.post(WireMock.urlEqualTo("/v1/charges"))
                 .withRequestBody(WireMock.matchingJsonPath("$.payment_method", WireMock.equalTo("tok_test_always_fail")))
                 .willReturn(WireMock.aResponse()
                         .withFixedDelay(800)
-                        .withStatus(200) // Falso Positivo (200 OK mas status failed)
+                        .withStatus(200)
                         .withHeader("Content-Type", "application/json")
                         .withBody("""
                                 {
@@ -64,12 +67,33 @@ public class WireMockLocalServer {
                                 """)));
 
         // =====================================================================
-        // 3. MOCK COM MÁQUINA DE ESTADO (O Smoke Test da Retentativa!)
+        // 3. MOCK DE FALHA PARA O SEEDER (tok_test_fail)
+        // Used by the 10% "Beira do Abismo" seeder scenario (billingAttempts=2).
+        // Always fails logically so these subs will be SUSPENDED on the next sweep.
+        // =====================================================================
+        WireMock.stubFor(WireMock.post(WireMock.urlEqualTo("/v1/charges"))
+                .withRequestBody(WireMock.matchingJsonPath("$.payment_method", WireMock.equalTo("tok_test_fail")))
+                .willReturn(WireMock.aResponse()
+                        .withFixedDelay(800)
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {
+                                  "transactionId": "tx_fail_seed",
+                                  "status": "failed",
+                                  "errorMessage": "Saldo insuficiente."
+                                }
+                                """)));
+
+        // =====================================================================
+        // 4. MOCK COM MÁQUINA DE ESTADO (O Smoke Test da Retentativa!)
+        // NOTE: WireMock scenarios are global — concurrent requests for the same
+        // token share the same state machine. This stub is designed for a single
+        // subscription with tok_test_fail_first_attempt, not bulk scenarios.
         // =====================================================================
         String SCENARIO_NAME = "Retry Scenario";
         String STATE_SECOND_ATTEMPT = "SECOND_ATTEMPT";
 
-        // Regra A: Quando o cenário começa (Tentativa 1), ele FALHA e avança o estado.
         WireMock.stubFor(WireMock.post(WireMock.urlEqualTo("/v1/charges"))
                 .inScenario(SCENARIO_NAME)
                 .whenScenarioStateIs(Scenario.STARTED)
@@ -85,9 +109,8 @@ public class WireMockLocalServer {
                                   "errorMessage": "Saldo Insuficiente"
                                 }
                                 """))
-                .willSetStateTo(STATE_SECOND_ATTEMPT)); // Transição de Estado!
+                .willSetStateTo(STATE_SECOND_ATTEMPT));
 
-        // Regra B: Quando já estiver no estado 'SECOND_ATTEMPT', ele APROVA!
         WireMock.stubFor(WireMock.post(WireMock.urlEqualTo("/v1/charges"))
                 .inScenario(SCENARIO_NAME)
                 .whenScenarioStateIs(STATE_SECOND_ATTEMPT)

@@ -21,9 +21,27 @@ public class PaymentGatewayClient {
 	private static final Logger log = LoggerFactory.getLogger(PaymentGatewayClient.class);
 	private final RestClient restClient;
 
+	/**
+	 * Represents a logical refusal from the gateway (HTTP 200, but status=failed).
+	 * Distinct from RestClientException (infrastructure failure).
+	 *
+	 * - CircuitBreaker: records it as a failure → contributes to opening the circuit
+	 *   when many cards are being declined (may indicate gateway-side issue).
+	 * - Retry: ignores it → retrying a declined card immediately makes no sense.
+	 * - BillingWorker: catches it and records FAILED in billing_history normally.
+	 */
+	public static class GatewayLogicalFailureException extends RuntimeException {
+		private final GatewayResponse response;
+		public GatewayLogicalFailureException(GatewayResponse response) {
+			super("Gateway recusou a cobrança: " + response.errorMessage());
+			this.response = response;
+		}
+		public GatewayResponse getResponse() { return response; }
+	}
+
 	public PaymentGatewayClient(
 		@Value("${payment.gateway.url:http://localhost:8081}") String baseUrl,
-		@Value("${payment.gateway.api-key:sk_test_123}") String apiKey){
+		@Value("${payment.gateway.api-key:sk_test_123}") String apiKey) {
 
 		HttpClient nativeClient = HttpClient.newBuilder()
 			.connectTimeout(Duration.ofSeconds(5))
@@ -57,18 +75,21 @@ public class PaymentGatewayClient {
 				.body(GatewayResponse.class);
 
 			if (response != null && !response.isSuccess()) {
-				log.warn("⚠️ Gateway retornou 200 OK, mas a cobrança falhou logicamente: {}", response.status());
-				return new GatewayResponse(response.transactionId(), "FAILED", "Cartão recusado pelo banco emissor.");
+				log.warn("⚠️ Gateway recusou a cobrança logicamente (HTTP 200, status={}): {}", response.status(), response.errorMessage());
+				throw new GatewayLogicalFailureException(response);
 			}
 
 			return response;
 
 		} catch (HttpClientErrorException e) {
 			log.warn("❌ Gateway recusou a requisição HTTP ({}): {}", e.getStatusCode(), e.getResponseBodyAsString());
-			return new GatewayResponse(null, "FAILED", "Falha de validação ou recusa direta pelo adquirente.");
+			// 4xx = gateway-side business rejection (bad request, auth failure).
+			// Re-throw as logical failure so CB records it, but Retry won't repeat it.
+			throw new GatewayLogicalFailureException(new GatewayResponse(null, "FAILED", e.getResponseBodyAsString()));
 
 		} catch (RestClientException e) {
 			log.error("🔥 Falha de infraestrutura de rede com o Gateway. {}", e.getMessage());
+			// Network/infra failure — CB records it, Retry will attempt again.
 			throw e;
 		}
 	}

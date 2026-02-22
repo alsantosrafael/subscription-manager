@@ -1,7 +1,10 @@
 package com.platform.subscription_manager.subscription.infrastructure.web;
 
+import com.github.tomakehurst.wiremock.client.WireMock;
+import com.platform.subscription_manager.shared.config.PaymentTokenConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -21,10 +24,17 @@ import java.util.UUID;
 public class SmokeTestSeederController {
 
 	private static final Logger log = LoggerFactory.getLogger(SmokeTestSeederController.class);
-	private final JdbcTemplate jdbcTemplate;
 
-	public SmokeTestSeederController(JdbcTemplate jdbcTemplate) {
+	private final JdbcTemplate jdbcTemplate;
+	private final PaymentTokenConverter tokenConverter;
+	private final int baseDelayMinutes;
+
+	public SmokeTestSeederController(JdbcTemplate jdbcTemplate,
+									 PaymentTokenConverter tokenConverter,
+									 @Value("${billing.retry.base-delay-minutes:1}") int baseDelayMinutes) {
 		this.jdbcTemplate = jdbcTemplate;
+		this.tokenConverter = tokenConverter;
+		this.baseDelayMinutes = baseDelayMinutes;
 	}
 
 	@PostMapping("/seed")
@@ -34,6 +44,26 @@ public class SmokeTestSeederController {
 		jdbcTemplate.execute("TRUNCATE TABLE event_publication CASCADE;");
 		jdbcTemplate.execute("TRUNCATE TABLE subscriptions CASCADE;");
 		jdbcTemplate.execute("TRUNCATE TABLE users CASCADE;");
+		jdbcTemplate.update("""
+			INSERT INTO shedlock (name, lock_until, locked_at, locked_by)
+			VALUES ('dailySweepTask', '1970-01-01 00:00:00', '1970-01-01 00:00:00', 'seed-reset')
+			ON CONFLICT (name) DO UPDATE
+			  SET lock_until = '1970-01-01 00:00:00',
+			      locked_at  = '1970-01-01 00:00:00',
+			      locked_by  = 'seed-reset'
+			""");
+
+		// Reset WireMock scenario state so tok_test_fail_first_attempt always starts
+		// from STARTED — a previous run may have left it in SECOND_ATTEMPT.
+		try {
+			WireMock.resetAllScenarios();
+			log.info("🔄 WireMock scenarios resetados.");
+		} catch (Exception e) {
+			log.warn("⚠️ Não foi possível resetar os cenários do WireMock: {}", e.getMessage());
+		}
+
+		log.warn("⚠️  Aguarde ~5s após o seed antes de acionar o scheduler — " +
+			"mensagens Kafka in-flight do ciclo anterior ainda podem estar a caminho do consumer.");
 
 		LocalDateTime today = LocalDateTime.now().truncatedTo(ChronoUnit.DAYS);
 		LocalDateTime pastMonth = today.minusMonths(1);
@@ -47,24 +77,24 @@ public class SmokeTestSeederController {
 			UUID userId = UUID.randomUUID();
 			String doc = userId.toString().substring(0, 11).replace("-", "");
 
-			// Dados do Usuário
 			usersBatch.add(new Object[]{userId, "User " + i, "user" + i + "@test.com", doc, LocalDateTime.now()});
 
-			// Lógica de distribuição de cenários (proporcional)
 			String plan = (i % 3 == 0) ? "PREMIUM" : (i % 3 == 1) ? "FAMILIA" : "BASICO";
 
 			if (i < (count * 0.7)) {
-				// 70% Happy Path (Sucesso)
+				// 70% Happy Path — renova com sucesso
 				subsBatch.add(createSubRow(userId, plan, "ACTIVE", "tok_test_success", pastMonth, today, true, 0, null));
 			} else if (i < (count * 0.8)) {
-				// 10% Retry (Falhou 1x) - Tentativa de cobrança falhou há 3 horas
+				// 10% Retry — falhou 1x, vai tentar novamente e ter sucesso
 				subsBatch.add(createSubRow(userId, plan, "ACTIVE", "tok_test_success", pastMonth, today, true, 1, LocalDateTime.now().minusHours(3)));
 			} else if (i < (count * 0.9)) {
-				// 10% Beira do Abismo (Vai Suspender) - Já falhou 2x
-				subsBatch.add(createSubRow(userId, plan, "ACTIVE", "tok_test_fail", pastMonth, today, true, 2, LocalDateTime.now().minusHours(3)));
+				// 10% Beira do Abismo — falhou 2x, próxima tentativa vai suspender
+				subsBatch.add(createSubRow(userId, plan, "ACTIVE", "tok_test_always_fail", pastMonth, today, true, 2, LocalDateTime.now().minusHours(3)));
 			} else {
-				// 10% Cancelados (Vai para CANCELED no fim do ciclo)
-				subsBatch.add(createSubRow(userId, plan, "ACTIVE", "tok_test_success", pastMonth, today, false, 0, null));
+				// 10% Cancelados — status já CANCELED, autoRenew=false, expiry=hoje.
+				// Representa um usuário que cancelou durante o ciclo e chegou ao vencimento.
+				// O scheduler vai varrer esses e mover para INACTIVE via expireCanceledSubscriptions().
+				subsBatch.add(createSubRow(userId, plan, "CANCELED", "tok_test_success", pastMonth, today, false, 0, null));
 			}
 		}
 
@@ -72,7 +102,6 @@ public class SmokeTestSeederController {
 		jdbcTemplate.batchUpdate("INSERT INTO users (id, name, email, document, created_at) VALUES (?, ?, ?, ?, ?)", usersBatch);
 
 		log.info("💾 Inserindo assinaturas no banco...");
-		// Cleaned up the INSERT to exactly match your schema and the Object[] array
 		jdbcTemplate.batchUpdate("""
             INSERT INTO subscriptions 
             (id, user_id, plan, status, payment_token, start_date, expiring_date, auto_renew, billing_attempts, last_billing_attempt, next_retry_at, version) 
@@ -87,25 +116,28 @@ public class SmokeTestSeederController {
 								  LocalDateTime start, LocalDateTime expire,
 								  boolean autoRenew, int attempts, LocalDateTime lastAttempt) {
 
-		// Intelligent next_retry_at generation
 		LocalDateTime nextRetry = null;
 		if (autoRenew) {
 			if (attempts > 0 && lastAttempt != null) {
-				// If it's a retry scenario, schedule the next retry slightly in the future or right now
-				nextRetry = LocalDateTime.now().plusMinutes(15);
+				// Mirror the exact backoff formula used by SubscriptionResultListener:
+				// delay = 2^attempts * baseDelayMinutes — seeded state is consistent with production
+				long delayMinutes = (long) Math.pow(2, attempts) * baseDelayMinutes;
+				nextRetry = lastAttempt.plusMinutes(delayMinutes);
 			} else {
-				// Normal renewal date
+				// No prior failures — nextRetryAt = expiringDate (due now, eligible immediately)
 				nextRetry = expire;
 			}
 		}
+		// autoRenew=false (CANCELED/SUSPENDED): nextRetryAt stays null — scheduler ignores these rows
+		// in findEligibleForRenewal (which requires autoRenew=true) and only sweeps them via
+		// expireCanceledSubscriptions.
 
-		// Returns exactly 11 items to match the 11 placeholders
 		return new Object[]{
 			UUID.randomUUID(),
 			userId,
 			plan,
 			status,
-			token,
+			tokenConverter.convertToDatabaseColumn(token),
 			start,
 			expire,
 			autoRenew,
@@ -115,3 +147,4 @@ public class SmokeTestSeederController {
 		};
 	}
 }
+

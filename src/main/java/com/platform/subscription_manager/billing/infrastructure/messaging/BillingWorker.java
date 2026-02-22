@@ -60,7 +60,6 @@ public class BillingWorker {
 					.map(record -> CompletableFuture.runAsync(() -> processSingleRecord(record.value()), executor))
 					.toList();
 
-				// ⏱️ REDUZIDO PARA 20 SEGUNDOS. Se o Gateway travar, falha rápido!
 				CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
 					.get(20, TimeUnit.SECONDS);
 			}
@@ -76,17 +75,13 @@ public class BillingWorker {
 	private void processSingleRecord(RenewalRequestedEvent event) {
 		String key = createIdempotencyKey(event);
 
-		// 1. IDEMPOTÊNCIA
 		boolean isNew = Boolean.TRUE.equals(transactionTemplate.execute(status ->
 			billingRepository.insertIfNotExist(event.subscriptionId(), key) == 1));
 
 		if (!isNew) {
-			// Key already exists — re-emit the stored result so downstream consumers stay in sync
 			log.info("🔄 [IDEMPOTENCY] Key {} já processada. Re-emitindo resultado existente.", key);
 			billingRepository.findByIdempotencyKey(key).ifPresent(existing -> {
 				BillingHistoryStatus existingStatus = existing.getStatus();
-				// If still PENDING (race: insert committed but result not yet written), treat as FAILED
-				// so the subscription retry cycle continues rather than stalling forever
 				if (existingStatus == BillingHistoryStatus.PENDING) {
 					log.warn("⚠️ [IDEMPOTENCY] Key {} encontrada como PENDING. Emitindo FAILED para forçar retry.", key);
 					existingStatus = BillingHistoryStatus.FAILED;
@@ -100,19 +95,26 @@ public class BillingWorker {
 
 		PaymentGatewayClient.GatewayResponse response;
 		try {
-			// 2. GATEWAY — token is fetched from DB here (decrypted transparently by JPA converter).
-			//    It is never stored in the Kafka event to avoid plain-text exposure in the broker.
 			String paymentToken = paymentTokenPort.getPaymentToken(event.subscriptionId())
 				.orElseThrow(() -> new IllegalStateException("Token não encontrado para sub: " + event.subscriptionId()));
 
 			response = paymentGatewayClient.charge(key, paymentToken, event.plan().getPrice());
 
+		} catch (PaymentGatewayClient.GatewayLogicalFailureException e) {
+			log.warn("💳 [GATEWAY] Cobrança recusada logicamente para key {}. Motivo: {}", key, e.getMessage());
+			PaymentGatewayClient.GatewayResponse declined = e.getResponse();
+			transactionTemplate.executeWithoutResult(status -> {
+				billingRepository.updateResult(key, BillingHistoryStatus.FAILED, declined.transactionId());
+				kafkaTemplate.send(RESULTS_TOPIC, event.subscriptionId().toString(),
+					new BillingResultEvent(event.subscriptionId(), declined.transactionId(),
+						BillingHistoryStatus.FAILED, event.expiringDate(), declined.errorMessage()));
+			});
+			return;
+
 		} catch (Exception e) {
 			log.warn("⚠️ O Gateway falhou para a key {}. Registrando falha para não envenenar a idempotência.", key);
-
 			transactionTemplate.executeWithoutResult(status -> {
 				billingRepository.updateResult(key, BillingHistoryStatus.FAILED, null);
-
 				kafkaTemplate.send(RESULTS_TOPIC, event.subscriptionId().toString(),
 					new BillingResultEvent(event.subscriptionId(), null, BillingHistoryStatus.FAILED,
 						event.expiringDate(), "Falha de comunicação com Gateway"));
@@ -121,15 +123,11 @@ public class BillingWorker {
 			return;
 		}
 
-		// 3. ATUALIZAÇÃO E RESULTADO (Sucesso ou Falha lógica)
 		transactionTemplate.executeWithoutResult(status -> {
-			BillingHistoryStatus finalStatus = response.isSuccess() ? BillingHistoryStatus.SUCCESS : BillingHistoryStatus.FAILED;
-
-			billingRepository.updateResult(key, finalStatus, response.transactionId());
-
+			billingRepository.updateResult(key, BillingHistoryStatus.SUCCESS, response.transactionId());
 			kafkaTemplate.send(RESULTS_TOPIC, event.subscriptionId().toString(),
 				new BillingResultEvent(event.subscriptionId(), response.transactionId(),
-					finalStatus, event.expiringDate(), response.errorMessage()));
+					BillingHistoryStatus.SUCCESS, event.expiringDate(), null));
 		});
 	}
 

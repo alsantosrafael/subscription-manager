@@ -1,12 +1,12 @@
 package com.platform.subscription_manager.subscription.application.services;
 
 import com.platform.subscription_manager.billing.BillingFacade;
+import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import com.platform.subscription_manager.shared.domain.exceptions.ResourceNotFoundException;
 import com.platform.subscription_manager.shared.domain.exceptions.UnprocessableEntityException;
 import com.platform.subscription_manager.shared.infrastructure.messaging.SubscriptionUpdatedEvent;
 import com.platform.subscription_manager.subscription.application.dtos.CreateSubscriptionDTO;
 import com.platform.subscription_manager.subscription.domain.entity.Subscription;
-import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import com.platform.subscription_manager.subscription.domain.repositories.SubscriptionRepository;
 import com.platform.subscription_manager.user.UserFacade;
 import org.slf4j.Logger;
@@ -16,16 +16,14 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Owns the transactional boundary for subscription creation.
- * Kept separate from SubscriptionService so that the post-commit cache publish
- * in SubscriptionService.create() is a true inter-bean call through the AOP proxy —
- * avoiding the Spring self-invocation problem where @Transactional would be ignored.
- *
- * The gateway HTTP call is intentionally placed between two short transactions so
- * no DB connection is held open during the external network call.
+ * Owns the transactional boundary for subscription writes.
+ * Returns a SubscriptionUpdatedEvent from every mutating method so the caller
+ * (SubscriptionService) can publish it inside its own transactionTemplate wrapper —
+ * giving @TransactionalEventListener(AFTER_COMMIT) a boundary to bind to.
  */
 @Service
 public class SubscriptionWriteService {
@@ -36,7 +34,6 @@ public class SubscriptionWriteService {
 	private final UserFacade userFacade;
 	private final BillingFacade billingFacade;
 
-	// Self-reference through the proxy so @Transactional on the helper methods is respected
 	@Autowired @Lazy
 	private SubscriptionWriteService self;
 
@@ -54,18 +51,22 @@ public class SubscriptionWriteService {
 	 * is never held open during the gateway HTTP call.
 	 */
 	public SubscriptionUpdatedEvent createAndCharge(CreateSubscriptionDTO payload) {
-		// TX 1: validate + persist subscription row, then release the connection
-		Subscription savedSub = self.saveSubscription(payload);
-		log.info("📋 [ASSINATURA] Sub {} criada para user {} plano {}. Iniciando cobrança.", savedSub.getId(), savedSub.getUserId(), savedSub.getPlan());
+		SaveResult result = self.saveSubscription(payload);
+		Subscription savedSub = result.subscription();
+		log.info("📋 [ASSINATURA] Sub {} {} para user {} plano {}. Iniciando cobrança.",
+			savedSub.getId(), result.wasReactivated() ? "reativada" : "criada",
+			savedSub.getUserId(), savedSub.getPlan());
 
-		// Gateway call — outside any transaction, no DB connection held here
 		BillingFacade.ChargeResult charge = billingFacade.chargeForNewSubscription(
 			savedSub.getId(), savedSub.getPlan(), savedSub.getPaymentToken());
 
 		if (!charge.success()) {
-			// TX 2a: delete the subscription row on decline, then release the connection
-			self.deleteSubscription(savedSub.getId());
-			log.warn("⚠️ [ASSINATURA] Cobrança recusada para sub {}. Revertendo criação. Motivo: {}", savedSub.getId(), charge.errorMessage());
+			SubscriptionStatus rollbackTo = result.wasReactivated()
+				? result.previousStatus()
+				: SubscriptionStatus.INACTIVE;
+			self.revertReactivation(savedSub.getId(), rollbackTo);
+			log.warn("⚠️ [ASSINATURA] Cobrança recusada para sub {}. Revertido para {}. Motivo: {}",
+				savedSub.getId(), rollbackTo, charge.errorMessage());
 			throw new UnprocessableEntityException("Payment declined: " + charge.errorMessage());
 		}
 
@@ -75,20 +76,65 @@ public class SubscriptionWriteService {
 			savedSub.getPlan(), savedSub.getStartDate(), savedSub.getExpiringDate(), savedSub.isAutoRenew());
 	}
 
+	/** Carries the saved entity plus enough context for a clean rollback. */
+	public record SaveResult(Subscription subscription, boolean wasReactivated, SubscriptionStatus previousStatus) {}
+
 	@Transactional
-	public Subscription saveSubscription(CreateSubscriptionDTO payload) {
+	public SaveResult saveSubscription(CreateSubscriptionDTO payload) {
 		if (!userFacade.exists(payload.userId())) {
 			throw new ResourceNotFoundException("User not found");
 		}
-		if (subscriptionRepository.existsByUserIdAndStatus(payload.userId(), SubscriptionStatus.ACTIVE)) {
-			throw new UnprocessableEntityException("User already has an active subscription");
+
+		Optional<Subscription> existing = subscriptionRepository.findByUserId(payload.userId());
+
+		if (existing.isPresent()) {
+			Subscription sub = existing.get();
+
+			if (sub.getStatus() == SubscriptionStatus.ACTIVE) {
+				throw new UnprocessableEntityException("User already has an active subscription");
+			}
+
+			SubscriptionStatus previous = sub.getStatus();
+			sub.reactivate(payload.plan(), payload.paymentToken());
+			return new SaveResult(subscriptionRepository.save(sub), true, previous);
 		}
+
 		Subscription sub = Subscription.create(payload.userId(), payload.plan(), payload.paymentToken());
-		return subscriptionRepository.save(sub);
+		return new SaveResult(subscriptionRepository.save(sub), false, null);
 	}
 
 	@Transactional
-	public void deleteSubscription(UUID subscriptionId) {
-		subscriptionRepository.deleteById(subscriptionId);
+	public SubscriptionUpdatedEvent revertReactivation(UUID subscriptionId, SubscriptionStatus restoreTo) {
+		Subscription sub = subscriptionRepository.findById(subscriptionId)
+			.orElseThrow(() -> new IllegalStateException("Sub not found during revert: " + subscriptionId));
+
+		sub.restoreStatus(restoreTo);
+		subscriptionRepository.save(sub);
+
+		return new SubscriptionUpdatedEvent(
+			sub.getId(), sub.getUserId(), sub.getStatus(),
+			sub.getPlan(), sub.getStartDate(), sub.getExpiringDate(), sub.isAutoRenew());
+	}
+
+	@Transactional
+	public SubscriptionUpdatedEvent cancelSubscription(UUID subscriptionId, UUID userId) {
+		Subscription sub = subscriptionRepository.findByIdAndUserId(subscriptionId, userId)
+			.orElseThrow(() -> new ResourceNotFoundException("Subscription not found or belongs to another user"));
+
+		if (sub.getStatus() != SubscriptionStatus.ACTIVE) {
+			throw new UnprocessableEntityException(
+				"Only ACTIVE subscriptions can be canceled. Current status: " + sub.getStatus());
+		}
+
+		sub.cancelRenewal();
+		sub.markAsCanceled();
+		subscriptionRepository.save(sub);
+
+		log.info("🚫 [ASSINATURA] Sub {} cancelada para user {}. Acesso mantido até {}. autoRenew=false.",
+			sub.getId(), sub.getUserId(), sub.getExpiringDate());
+
+		return new SubscriptionUpdatedEvent(
+			sub.getId(), sub.getUserId(), sub.getStatus(),
+			sub.getPlan(), sub.getStartDate(), sub.getExpiringDate(), sub.isAutoRenew());
 	}
 }

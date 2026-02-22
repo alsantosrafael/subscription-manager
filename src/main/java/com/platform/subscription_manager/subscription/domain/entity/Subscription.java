@@ -20,12 +20,11 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
-import java.util.Random;
 import java.util.UUID;
 
 @Entity
 @Table(name = "subscriptions", indexes = {
-	@Index(name = "idx_sub_renewal_sweep", columnList = "status, expiring_date, last_billing_attempt"),
+	@Index(name = "idx_sub_renewal_sweep", columnList = "next_retry_at, expiring_date"),
 	@Index(name = "idx_sub_api_read", columnList = "user_id")
 })
 @Getter
@@ -86,52 +85,60 @@ public class Subscription {
 		return sub;
 	}
 
-	public void cancelRenewal() { // scheduler will cancel on the day it should be renewed
+	/**
+	 * Marks the subscription as user-cancelled.
+	 * autoRenew is set to false; status intentionally stays ACTIVE so the user
+	 * retains access until expiringDate. The scheduler moves CANCELED → INACTIVE.
+	 */
+	public void cancelRenewal() {
 		this.autoRenew = false;
 	}
 
-	public void registerPaymentFailure(int maxAttempts, int baseDelayMinutes) {
-		if (this.billingAttempts >= maxAttempts) {
-			return; // already at or beyond threshold — do not increment further
-		}
-
-		this.billingAttempts++;
-		this.lastBillingAttempt = LocalDateTime.now();
-
-		if (this.billingAttempts >= maxAttempts) {
-			this.status = SubscriptionStatus.SUSPENDED;
-			this.autoRenew = false;
-			this.nextRetryAt = null;
-		} else {
-			long delay = (long) Math.pow(2, this.billingAttempts) * baseDelayMinutes;
-			this.nextRetryAt = LocalDateTime.now()
-				.plusMinutes(delay)
-				.plusSeconds(new Random().nextInt(60)); // Jitter
-		}
+	/**
+	 * Sets status to CANCELED. Called by the service layer after cancelRenewal()
+	 * so the domain method stays honest about its single concern.
+	 */
+	public void markAsCanceled() {
+		this.status = SubscriptionStatus.CANCELED;
 	}
 
-	public void renew() {
-		this.expiringDate = BillingCyclePolicy.calculateNextExpiration(this.expiringDate);
-		this.billingAttempts = 0;
+	/**
+	 * Reactivates a CANCELED or SUSPENDED subscription.
+	 * Resets the billing cycle from now, clears failure state, and optionally
+	 * updates the payment token (user may have changed their card).
+	 */
+	public void reactivate(Plan newPlan, String newPaymentToken) {
+		this.plan = newPlan;
+		this.paymentToken = newPaymentToken;
 		this.status = SubscriptionStatus.ACTIVE;
+		this.startDate = LocalDateTime.now();
+		this.expiringDate = BillingCyclePolicy.calculateNextExpiration(this.startDate);
 		this.autoRenew = true;
-	}
-	public void markBillingAttempt(int baseDelayMinutes) {
-		// Only stamps timing — billingAttempts counter is owned by registerPaymentFailure
-		this.lastBillingAttempt = LocalDateTime.now();
-		long minutesToAdd = (long) Math.pow(2, this.billingAttempts) * baseDelayMinutes;
-		int jitter = new Random().nextInt(60);
-
-		this.nextRetryAt = LocalDateTime.now().plusMinutes(minutesToAdd).plusSeconds(jitter);
-	}
-
-	public void registerBillingSuccess(LocalDateTime newExpiringDate) {
-		this.status = SubscriptionStatus.ACTIVE;
-		this.expiringDate = newExpiringDate;
 		this.billingAttempts = 0;
 		this.lastBillingAttempt = null;
+		this.nextRetryAt = this.expiringDate;
+	}
+
+	/** Rolls back a reactivation when the initial charge is declined. */
+	public void restoreStatus(SubscriptionStatus previousStatus) {
+		this.status = previousStatus;
+		this.autoRenew = false;
 		this.nextRetryAt = null;
 	}
+
+	/**
+	 * Stamps an in-flight guard so the sweep does not re-dispatch this subscription
+	 * while a Kafka/gateway round-trip is already in progress.
+	 * Uses a short fixed window independent of billingAttempts — exponential backoff
+	 * is computed by SubscriptionResultListener using the billing.retry.base-delay-minutes property.
+	 *
+	 * @param inFlightGuardMinutes how long to block re-dispatch (e.g. 5 minutes)
+	 */
+	public void markBillingAttempt(int inFlightGuardMinutes) {
+		this.lastBillingAttempt = LocalDateTime.now();
+		this.nextRetryAt = LocalDateTime.now().plusMinutes(inFlightGuardMinutes);
+	}
+
 
 	/**
 	 * Mirrors exactly what renewSubscriptionAtomic writes to the DB.

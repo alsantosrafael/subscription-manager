@@ -20,6 +20,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -37,6 +38,7 @@ class SubscriptionServiceTest {
     @Mock private ApplicationEventPublisher eventPublisher;
     @Mock private RedisTemplate<String, Object> redisTemplate;
     @Mock private ValueOperations<String, Object> valueOperations;
+    @Mock private TransactionTemplate transactionTemplate;
 
     @InjectMocks
     private SubscriptionService subscriptionService;
@@ -58,6 +60,8 @@ class SubscriptionServiceTest {
                 Plan.BASICO, sub.getStartDate(), sub.getExpiringDate(), true);
 
             when(subscriptionWriteService.createAndCharge(any())).thenReturn(cacheEvent);
+            doAnswer(inv -> { ((java.util.function.Consumer<?>) inv.getArgument(0)).accept(null); return null; })
+                .when(transactionTemplate).executeWithoutResult(any());
 
             SubscriptionResponseDTO response = subscriptionService.create(
                 new CreateSubscriptionDTO(USER_ID, Plan.BASICO, TOKEN));
@@ -87,29 +91,33 @@ class SubscriptionServiceTest {
     class Cancel {
 
         @Test
-        @DisplayName("Sets autoRenew to false; status stays ACTIVE until scheduler expires it")
+        @DisplayName("Delegates to SubscriptionWriteService, publishes cache event")
         void happyPath() {
-            var subscription = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
+            var sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
+            var cacheEvent = new SubscriptionUpdatedEvent(
+                SUBSCRIPTION_ID, USER_ID, SubscriptionStatus.CANCELED,
+                Plan.BASICO, sub.getStartDate(), sub.getExpiringDate(), false);
 
-            when(subscriptionRepository.findByIdAndUserId(SUBSCRIPTION_ID, USER_ID))
-                .thenReturn(Optional.of(subscription));
+            when(subscriptionWriteService.cancelSubscription(SUBSCRIPTION_ID, USER_ID))
+                .thenReturn(cacheEvent);
+            doAnswer(inv -> { ((java.util.function.Consumer<?>) inv.getArgument(0)).accept(null); return null; })
+                .when(transactionTemplate).executeWithoutResult(any());
 
             subscriptionService.cancel(SUBSCRIPTION_ID, USER_ID);
 
-            assertFalse(subscription.isAutoRenew());
-            assertEquals(SubscriptionStatus.ACTIVE, subscription.getStatus());
-            verify(subscriptionRepository).save(subscription);
+            verify(subscriptionWriteService).cancelSubscription(SUBSCRIPTION_ID, USER_ID);
+            verify(eventPublisher).publishEvent(cacheEvent);
         }
 
         @Test
-        @DisplayName("Throws ResourceNotFoundException when subscription is not found")
+        @DisplayName("Propagates ResourceNotFoundException when subscription is not found")
         void subscriptionNotFound() {
-            when(subscriptionRepository.findByIdAndUserId(SUBSCRIPTION_ID, USER_ID))
-                .thenReturn(Optional.empty());
+            when(subscriptionWriteService.cancelSubscription(SUBSCRIPTION_ID, USER_ID))
+                .thenThrow(new ResourceNotFoundException("Subscription not found or belongs to another user"));
 
             assertThrows(ResourceNotFoundException.class,
                 () -> subscriptionService.cancel(SUBSCRIPTION_ID, USER_ID));
-            verify(subscriptionRepository, never()).save(any());
+            verify(eventPublisher, never()).publishEvent(any());
         }
     }
 

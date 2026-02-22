@@ -6,23 +6,18 @@ import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 @DisplayName("Subscription entity")
 class SubscriptionTest {
 
 	private static final UUID USER_ID = UUID.randomUUID();
 	private static final String TOKEN  = "tok_test_abc123";
-	private static final int MAX_ATTEMPTS = 3;
-	private static final int BASE_DELAY_MINUTES = 60;
 
 	@Nested
 	@DisplayName("Subscription.create()")
@@ -103,193 +98,86 @@ class SubscriptionTest {
 	}
 
 	@Nested
-	@DisplayName("recordPaymentFailure(maxAttemptsAllowed)")
-	class RecordPaymentFailure {
+	@DisplayName("markBillingAttempt() — in-flight guard")
+	class MarkBillingAttempt {
+
+		private static final int IN_FLIGHT_GUARD_MINUTES = 5;
 
 		@Test
-		@DisplayName("First failure increments counter; status stays ACTIVE, autoRenew stays true")
-		void firstFailureIncrementsCounterOnly() {
+		@DisplayName("Sets nextRetryAt to now + inFlightGuardMinutes regardless of billingAttempts (attempt 0)")
+		void setsFixedGuardWindowOnFirstAttempt() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
+			LocalDateTime before = LocalDateTime.now();
 
-			sub.registerPaymentFailure(3, BASE_DELAY_MINUTES);
+			sub.markBillingAttempt(IN_FLIGHT_GUARD_MINUTES);
 
-			assertEquals(1, sub.getBillingAttempts());
-			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
-			assertTrue(sub.isAutoRenew());
+			LocalDateTime after = LocalDateTime.now();
+			assertNotNull(sub.getNextRetryAt());
+			assertTrue(sub.getNextRetryAt().isAfter(before.plusMinutes(IN_FLIGHT_GUARD_MINUTES).minusSeconds(2)),
+				"nextRetryAt must be at least now + 5 minutes");
+			assertTrue(sub.getNextRetryAt().isBefore(after.plusMinutes(IN_FLIGHT_GUARD_MINUTES).plusSeconds(2)),
+				"nextRetryAt must not exceed now + 5 minutes + 2s tolerance");
 		}
 
 		@Test
-		@DisplayName("Second failure increments counter; still ACTIVE")
-		void secondFailureStillActive() {
+		@DisplayName("Fixed guard window does NOT grow with billingAttempts — regression for exponential formula bug")
+		void guardWindowIsFixedNotExponential() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
+			// Inject billingAttempts = 2 directly to simulate prior failures
+			ReflectionTestUtils.setField(sub, "billingAttempts", 2);
 
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
+			LocalDateTime before = LocalDateTime.now();
+			sub.markBillingAttempt(IN_FLIGHT_GUARD_MINUTES);
+			LocalDateTime after = LocalDateTime.now();
 
-			assertEquals(2, sub.getBillingAttempts());
-			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
+			// With old formula: 2^2 * 60 = 240 minutes. With the fix: always 5 minutes.
+			assertTrue(sub.getNextRetryAt().isBefore(after.plusMinutes(IN_FLIGHT_GUARD_MINUTES).plusSeconds(2)),
+				"nextRetryAt must not be 240 minutes away — guard must stay fixed at 5 minutes");
+			assertTrue(sub.getNextRetryAt().isAfter(before.plusMinutes(IN_FLIGHT_GUARD_MINUTES).minusSeconds(2)),
+				"nextRetryAt must be approximately now + 5 minutes");
 		}
 
 		@Test
-		@DisplayName("Reaches threshold — suspends and stops autoRenew")
-		void atThresholdSuspendsSubscription() {
+		@DisplayName("Stamps lastBillingAttempt")
+		void stampsLastBillingAttempt() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
+			assertNull(sub.getLastBillingAttempt());
 
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-
-			assertEquals(3, sub.getBillingAttempts());
-			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
-			assertFalse(sub.isAutoRenew());
-		}
-
-		@Test
-		@DisplayName("Custom threshold of 1 — suspends on the very first failure")
-		void customThresholdOfOne() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-
-			sub.registerPaymentFailure(1, BASE_DELAY_MINUTES);
-
-			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
-			assertFalse(sub.isAutoRenew());
-		}
-
-		@Test
-		@DisplayName("Beyond threshold — keeps SUSPENDED and stops incrementing the counter")
-		void beyondThresholdKeepsSuspended() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-
-			assertEquals(3, sub.getBillingAttempts());
-			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
-		}
-
-		@Test
-		@DisplayName("Sets lastBillingAttempt timestamp on each call")
-		void setsLastBillingAttempt() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-
-			sub.registerPaymentFailure(3, BASE_DELAY_MINUTES);
+			sub.markBillingAttempt(IN_FLIGHT_GUARD_MINUTES);
 
 			assertNotNull(sub.getLastBillingAttempt());
 		}
-	}
-
-	@Nested
-	@DisplayName("registerBillingSuccess()")
-	class RegisterBillingSuccess {
 
 		@Test
-		@DisplayName("Sets status to ACTIVE and updates expiringDate")
-		void setsActiveAndUpdatesExpiringDate() {
+		@DisplayName("Does NOT increment billingAttempts — counter is owned by atomic DB queries")
+		void doesNotIncrementBillingAttempts() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-			var newExpiry = LocalDateTime.now().plusMonths(1);
+			assertEquals(0, sub.getBillingAttempts());
 
-			sub.registerBillingSuccess(newExpiry);
-
-			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
-			assertEquals(newExpiry, sub.getExpiringDate());
-		}
-
-		@Test
-		@DisplayName("Resets billingAttempts to 0")
-		void resetsBillingAttempts() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-
-			sub.registerBillingSuccess(LocalDateTime.now().plusMonths(1));
+			sub.markBillingAttempt(IN_FLIGHT_GUARD_MINUTES);
 
 			assertEquals(0, sub.getBillingAttempts());
 		}
+	}
+
+	@Nested
+	@DisplayName("applyRenewal()")
+	class ApplyRenewal {
 
 		@Test
-		@DisplayName("Clears lastBillingAttempt")
-		void clearsLastBillingAttempt() {
+		@DisplayName("Updates expiringDate, resets billingAttempts and sets nextRetryAt to nextDate")
+		void appliesRenewalCorrectly() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
+			ReflectionTestUtils.setField(sub, "billingAttempts", 2);
+			LocalDateTime nextDate = LocalDateTime.now().plusMonths(1);
 
-			sub.registerBillingSuccess(LocalDateTime.now().plusMonths(1));
+			sub.applyRenewal(nextDate);
 
+			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
+			assertEquals(nextDate, sub.getExpiringDate());
+			assertEquals(0, sub.getBillingAttempts());
 			assertNull(sub.getLastBillingAttempt());
-		}
-	}
-
-	@Nested
-	@DisplayName("renew()")
-	class Renew {
-
-		@Test
-		@DisplayName("expiringDate advances by one month from the previous expiringDate")
-		void expiringDateAdvancesOneMonth() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			var previousExpiring = sub.getExpiringDate();
-
-			sub.renew();
-
-			var expectedBase = previousExpiring.plusMonths(1);
-			assertFalse(sub.getExpiringDate().isBefore(expectedBase),
-				"renewed expiringDate must not be before previous + 1 month");
-			assertFalse(sub.getExpiringDate().isAfter(expectedBase.plusHours(6)),
-				"renewed expiringDate must not exceed previous + 1 month + 6 h jitter");
-		}
-
-		@Test
-		@DisplayName("billingFailedAttempts resets to 0")
-		void failedAttemptsResetOnRenewal() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerPaymentFailure(3, BASE_DELAY_MINUTES);
-			sub.registerPaymentFailure(3, BASE_DELAY_MINUTES);
-
-			sub.renew();
-
-			assertEquals(0, sub.getBillingAttempts());
-		}
-
-		@Test
-		@DisplayName("Status is ACTIVE after renewal")
-		void statusIsActiveAfterRenewal() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
-
-			sub.renew();
-
-			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
-		}
-
-		@Test
-		@DisplayName("autoRenew is restored to true after renewal")
-		void autoRenewRestoredAfterRenewal() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.cancelRenewal();
-
-			sub.renew();
-
-			assertTrue(sub.isAutoRenew());
-		}
-
-		@Test
-		@DisplayName("Two consecutive renewals advance the date by two months")
-		void multipleRenewalsAdvanceDateCorrectly() {
-			Subscription sub = Subscription.create(USER_ID, Plan.PREMIUM, TOKEN);
-			var startExpiring = sub.getExpiringDate();
-
-			sub.renew();
-			sub.renew();
-
-			var expectedBase = startExpiring.plusMonths(2);
-			assertFalse(sub.getExpiringDate().isBefore(expectedBase),
-				"after 2 renewals expiringDate must be at least 2 months ahead");
-			assertFalse(sub.getExpiringDate().isAfter(expectedBase.plusHours(12)),
-				"after 2 renewals expiringDate must not be more than 2 months + 12 h ahead");
+			assertEquals(nextDate, sub.getNextRetryAt());
 		}
 	}
 }
