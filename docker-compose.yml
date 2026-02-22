@@ -1,6 +1,60 @@
 version: '3.8'
 
 services:
+
+  # ---------------------------------------------------------------
+  # Application
+  # WireMock (mock payment gateway) runs embedded inside the same
+  # JVM on port 8081 when SPRING_PROFILES_ACTIVE=local — no extra
+  # container needed.
+  #
+  # First build the JAR (one-time, ~30s):
+  #   ./gradlew bootJar -x test
+  #
+  # Then start everything:
+  #   docker compose up --build
+  #
+  # Seed data:
+  #   curl -s -X POST "http://localhost:8080/api/test/seed?count=20" | jq
+  #
+  # Trigger sweep manually:
+  #   curl -s -X POST http://localhost:8080/v1/admin/billing/trigger-sweep
+  #
+  # Load test (requires k6):
+  #   k6 run load-test.js
+  # ---------------------------------------------------------------
+#  app:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    container_name: subscription-manager
+#    ports:
+#      - "8080:8080"
+#    environment:
+#      SPRING_PROFILES_ACTIVE: local
+#      # Override localhost references from application.properties with Docker service hostnames
+#      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/subscription_db
+#      SPRING_DATASOURCE_USERNAME: admin
+#      SPRING_DATASOURCE_PASSWORD: admin
+#      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+#      SPRING_DATA_REDIS_HOST: subscription-redis
+#      # WireMock binds to localhost:8081 inside this JVM — correct even inside Docker
+#      PAYMENT_GATEWAY_URL: http://localhost:8081
+#      PAYMENT_GATEWAY_API_KEY: sk_test_123
+#      PAYMENT_TOKEN_ENCRYPTION_KEY: 3C4bsB0GaKoZJcM2zGKepGmizBgha7ut/UhKV4BEzQU=
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#      kafka:
+#        condition: service_healthy
+#      redis:
+#        condition: service_healthy
+#    restart: on-failure
+#    deploy:
+#      resources:
+#        limits:
+#          memory: 1g
+
   postgres:
     image: postgres:15-alpine
     container_name: postgres
@@ -21,7 +75,7 @@ services:
 
   # Apache Kafka (KRaft mode)
   kafka:
-    image: confluentinc/cp-kafka:7.6.0
+    image: confluentinc/cp-kafka:8.0.0
     container_name: kafka-broker
     ports:
       - "9092:9092"
@@ -42,6 +96,12 @@ services:
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
       KAFKA_TRANSACTION_MAX_TIMEOUT_MS: 900000
       KAFKA_CONNECTIONS_MAX_IDLE_MS: 300000
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   prometheus:
     image: prom/prometheus
@@ -58,18 +118,25 @@ services:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
+
   redis:
     image: redis:7.2-alpine
     container_name: subscription-redis
     ports:
       - "6379:6379"
-    command: redis-server --save 60 1 --loglevel warning
+    command: redis-server --save "" --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 320M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   postgres_data:
   redis_data:

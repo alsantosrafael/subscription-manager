@@ -26,19 +26,29 @@ public class WireMockLocalServer {
         wireMockServer.start();
         WireMock.configureFor("localhost", 8081);
 
-        log.info("🚀 WireMock Server iniciado na porta 8081 para simular a Pagar.me / Stripe.");
+        log.info("🚀 WireMock Server iniciado na porta 8081 para simular o gateway de pagamentos.");
+        log.info("📋 Tokens configurados:");
+        log.info("   tok_test_success           → aprovação (~70% das subs no seed)");
+        log.info("   tok_test_always_fail        → recusa permanente → SUSPENDED após 3 tentativas");
+        log.info("   tok_test_fail_first_attempt → falha 1ª tentativa, sucesso 2ª (demonstra retry)");
 
         setupStubs();
     }
 
     private void setupStubs() {
+        // NOTA SOBRE O DELAY: 200ms simula latência real de gateway sem saturar o WireMock.
+        // O valor anterior de 800ms com 15 threads concorrentes causava RST_STREAM/Broken pipe
+        // porque o Jetty interno do WireMock descartava conexões sob pressão — o circuit breaker
+        // abria por erro de INFRA, não por falha de negócio. Comportamento enganoso para demos.
+
         // =====================================================================
-        // 1. MOCK DE SUCESSO (Caminho Feliz)
+        // 1. SUCESSO — tok_test_success
+        // ~70% das subs do seed. Gateway aprova. Sub renovada → ACTIVE.
         // =====================================================================
         WireMock.stubFor(WireMock.post(WireMock.urlEqualTo("/v1/charges"))
                 .withRequestBody(WireMock.matchingJsonPath("$.payment_method", WireMock.equalTo("tok_test_success")))
                 .willReturn(WireMock.aResponse()
-                        .withFixedDelay(800)
+                        .withFixedDelay(200)
                         .withStatus(200)
                         .withHeader("Content-Type", "application/json")
                         .withBody("""
@@ -49,13 +59,15 @@ public class WireMockLocalServer {
                                 """)));
 
         // =====================================================================
-        // 2. MOCK DE FALHA ABSOLUTA (Cartão Bloqueado para sempre)
-        // Used by tok_test_always_fail — sub will be SUSPENDED after 3 attempts.
+        // 2. FALHA PERMANENTE — tok_test_always_fail
+        // ~10% das subs do seed chegam com billingAttempts=2.
+        // Esta é a 3ª tentativa → SubscriptionResultListener suspende a sub.
+        // Demonstra: suspensão automática, cache atualizado, acesso revogado.
         // =====================================================================
         WireMock.stubFor(WireMock.post(WireMock.urlEqualTo("/v1/charges"))
                 .withRequestBody(WireMock.matchingJsonPath("$.payment_method", WireMock.equalTo("tok_test_always_fail")))
                 .willReturn(WireMock.aResponse()
-                        .withFixedDelay(800)
+                        .withFixedDelay(200)
                         .withStatus(200)
                         .withHeader("Content-Type", "application/json")
                         .withBody("""
@@ -67,14 +79,13 @@ public class WireMockLocalServer {
                                 """)));
 
         // =====================================================================
-        // 3. MOCK DE FALHA PARA O SEEDER (tok_test_fail)
-        // Used by the 10% "Beira do Abismo" seeder scenario (billingAttempts=2).
-        // Always fails logically so these subs will be SUSPENDED on the next sweep.
+        // 3. FALHA SEEDER — tok_test_fail
+        // Alias de falha lógica usado para seeds com billingAttempts=2.
         // =====================================================================
         WireMock.stubFor(WireMock.post(WireMock.urlEqualTo("/v1/charges"))
                 .withRequestBody(WireMock.matchingJsonPath("$.payment_method", WireMock.equalTo("tok_test_fail")))
                 .willReturn(WireMock.aResponse()
-                        .withFixedDelay(800)
+                        .withFixedDelay(200)
                         .withStatus(200)
                         .withHeader("Content-Type", "application/json")
                         .withBody("""
@@ -86,10 +97,10 @@ public class WireMockLocalServer {
                                 """)));
 
         // =====================================================================
-        // 4. MOCK COM MÁQUINA DE ESTADO (O Smoke Test da Retentativa!)
-        // NOTE: WireMock scenarios are global — concurrent requests for the same
-        // token share the same state machine. This stub is designed for a single
-        // subscription with tok_test_fail_first_attempt, not bulk scenarios.
+        // 4. MÁQUINA DE ESTADO — tok_test_fail_first_attempt
+        // Falha na 1ª chamada, sucesso na 2ª.
+        // Demonstra: backoff de retry, idempotência, recuperação automática.
+        // ATENÇÃO: cenários WireMock são globais — não use este token em bulk.
         // =====================================================================
         String SCENARIO_NAME = "Retry Scenario";
         String STATE_SECOND_ATTEMPT = "SECOND_ATTEMPT";
@@ -99,7 +110,7 @@ public class WireMockLocalServer {
                 .whenScenarioStateIs(Scenario.STARTED)
                 .withRequestBody(WireMock.matchingJsonPath("$.payment_method", WireMock.equalTo("tok_test_fail_first_attempt")))
                 .willReturn(WireMock.aResponse()
-                        .withFixedDelay(800)
+                        .withFixedDelay(200)
                         .withStatus(200)
                         .withHeader("Content-Type", "application/json")
                         .withBody("""
@@ -116,7 +127,7 @@ public class WireMockLocalServer {
                 .whenScenarioStateIs(STATE_SECOND_ATTEMPT)
                 .withRequestBody(WireMock.matchingJsonPath("$.payment_method", WireMock.equalTo("tok_test_fail_first_attempt")))
                 .willReturn(WireMock.aResponse()
-                        .withFixedDelay(800)
+                        .withFixedDelay(200)
                         .withStatus(200)
                         .withHeader("Content-Type", "application/json")
                         .withBody("""

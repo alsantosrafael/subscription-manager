@@ -15,34 +15,125 @@ O projeto foi construído como resposta a um desafio técnico, mas com uma barra
 - Docker + Docker Compose
 - Java 21+
 - (Opcional) `jq` para formatar as respostas JSON no terminal
+- (Opcional) [`k6`](https://k6.io/docs/get-started/installation/) para o teste de carga
 
-### 1. Suba a infraestrutura
+---
+
+### Modo 1 — Desenvolvimento local (JVM direto)
+
+Mais rápido para iterar em código. A infra sobe no Docker, a aplicação roda na sua JVM.
 
 ```bash
-docker compose up -d
+# 1. Suba a infra (Postgres, Kafka, Redis, Prometheus, Grafana)
+docker compose up -d postgres kafka redis prometheus grafana
+
+# 2. Aguarde ~15s e inicie a aplicação
+./gradlew bootRun --args='--spring.profiles.active=local'
 ```
 
-Aguarde ~10 segundos. Isso inicia PostgreSQL, Kafka (KRaft), Redis e Prometheus.
+---
 
-#### 1.1 Caso queira começar do zero limpando volumes
+### Modo 2 — Stack completa no Docker (para stress test)
+
+Tudo dentro do Docker Compose, incluindo a aplicação.
+
+```bash
+# 1. Gere o JAR (uma vez, ~30s — pula testes para ser mais rápido)
+./gradlew bootJar -x test
+
+# 2. Suba tudo (infra + app)
+docker compose up --build
+
+# Aguarde a mensagem "Started SubscriptionManagerApplication" nos logs do container app.
+# Kafka leva ~30s para ficar healthy — o app aguarda automaticamente via depends_on.
+```
+
+Para resetar completamente os volumes entre runs:
 
 ```bash
 docker compose down -v --remove-orphans
 ```
 
-### 2. Inicie a aplicação
+---
+
+### Modo 3 — Stress test com o endpoint de seed
+
+Com a stack rodando (Modo 1 ou Modo 2), use o script `stress-seed.sh` para popular o banco e acionar o scheduler em loop automaticamente.
+
+#### Uso do script
 
 ```bash
-./gradlew bootRun --args='--spring.profiles.active=local'
+# Sintaxe
+./stress-seed.sh [count] [cycles]
+
+#   count   — assinaturas por chamada de seed  (padrão: 20)
+#   cycles  — número de ciclos seed → sweep    (padrão: 5)
 ```
 
-O perfil `local` ativa o WireMock (mock do gateway de pagamento) e o seeder de dados.
+#### Exemplos
 
-### 3. Rode os testes
+```bash
+# Padrão: 5 ciclos × 20 assinaturas = 100 total
+./stress-seed.sh
+
+# Carga média: 10 ciclos × 50 assinaturas = 500 total
+./stress-seed.sh 50 10
+
+# Carga alta: 20 ciclos × 100 assinaturas = 2000 total
+./stress-seed.sh 100 20
+```
+
+#### O que o script faz em cada ciclo
+
+1. **Seed** — `POST /api/test/seed?count=N` — insere N assinaturas distribuídas entre todos os cenários de negócio (ACTIVE renovando, CANCELED expirando, SUSPENDED, beira do abismo)
+2. **Pausa 2s** — dá tempo para o Kafka processar resultados do ciclo anterior
+3. **Sweep** — `POST /v1/admin/billing/trigger-sweep` — dispara o scheduler imediatamente sem esperar o cron de 1 minuto
+4. **Pausa 5s** — aguarda o BillingWorker processar as cobranças via Kafka
+5. **Snapshot** — mostra a contagem de assinaturas por status
+
+#### Comandos avulsos (sem o script)
+
+```bash
+# Seed pontual
+curl -s -X POST "http://localhost:8080/api/test/seed?count=20" | jq
+
+# Sweep manual
+curl -s -X POST http://localhost:8080/v1/admin/billing/trigger-sweep
+
+# Estado atual de todas as assinaturas
+curl -s http://localhost:8080/v1/admin/subscriptions | \
+  jq '[.[] | {id, status, billing_attempts, next_retry_at}]'
+```
+
+---
+
+### Modo 4 — Teste de carga com k6
+
+Simula 50 usuários simultâneos criando assinaturas, fazendo polling do resultado via Kafka e cancelando aleatoriamente (~20% dos flows).
+
+```bash
+# Instalar k6 (macOS)
+brew install k6
+
+# Rodar o teste de carga contra a stack em execução
+k6 run load-test.js
+```
+
+O teste dura 60s (15s rampa ↑ + 30s fogo cerrado + 15s rampa ↓) e mede:
+- `http_req_duration` por endpoint (tag `name`)
+- `kafka_e2e_processing_time` — latência end-to-end desde a criação até o Kafka resolver a cobrança
+- `business_cancelations` — contador de cancelamentos bem-sucedidos
+- Threshold: `p(95) < 200ms` no `GET /v1/subscriptions/{id}` (o WireMock tem 800ms de delay fixo — o p95 do GET é dominado pelo cache Redis, não pelo gateway)
+
+---
+
+### Rode os testes unitários e de integração
 
 ```bash
 ./gradlew test
 ```
+
+---
 
 ### Serviços disponíveis
 
@@ -52,9 +143,11 @@ O perfil `local` ativa o WireMock (mock do gateway de pagamento) e o seeder de d
 | **Swagger UI** | **`http://localhost:8080/swagger-ui.html`** |
 | **OpenAPI JSON** | **`http://localhost:8080/v3/api-docs`** |
 | Prometheus | `http://localhost:9090` |
+| Grafana | `http://localhost:3000` (admin/admin) |
 | Métricas (raw) | `http://localhost:8080/actuator/prometheus` |
 
 ---
+
 
 ## 🎮 Cenários de Demonstração
 

@@ -8,6 +8,7 @@ import com.platform.subscription_manager.shared.domain.Plan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.UUID;
 
@@ -18,22 +19,21 @@ public class BillingFacadeImpl implements BillingFacade {
 
 	private final PaymentGatewayClient paymentGatewayClient;
 	private final BillingHistoryRepository billingHistoryRepository;
+	private final TransactionTemplate transactionTemplate;
 
 	public BillingFacadeImpl(PaymentGatewayClient paymentGatewayClient,
-							 BillingHistoryRepository billingHistoryRepository) {
+							 BillingHistoryRepository billingHistoryRepository,
+							 TransactionTemplate transactionTemplate) {
 		this.paymentGatewayClient = paymentGatewayClient;
 		this.billingHistoryRepository = billingHistoryRepository;
+		this.transactionTemplate = transactionTemplate;
 	}
 
 	/**
 	 * Charges the user synchronously on subscription creation.
-	 * The idempotency key uses a dedicated "initial" suffix so it never collides
-	 * with the renewal key format ({subscriptionId}-{year}-{month}-attempt-{n}).
-	 * Retries on infrastructure failures are handled by Resilience4j @Retry on the caller (SubscriptionService.create).
-	 * The underlying charge() call is also protected by @CircuitBreaker, so after enough consecutive
-	 * failures the circuit opens and retries stop immediately.
-	 * A 4xx / logical decline is NOT retried — the gateway returns GatewayResponse with isSuccess()==false,
-	 * which we propagate as ChargeResult(success=false) and the caller throws UnprocessableEntityException.
+	 * Two dedicated transactions — one to write PENDING before the HTTP call,
+	 * one to write the final result after — ensure no DB connection is held
+	 * during the gateway I/O.
 	 */
 	@Override
 	public ChargeResult chargeForNewSubscription(UUID subscriptionId, Plan plan, String paymentToken) {
@@ -41,14 +41,12 @@ public class BillingFacadeImpl implements BillingFacade {
 
 		log.info("💳 [COBRANÇA INICIAL] Iniciando cobrança para sub {} plano {}", subscriptionId, plan);
 
-		// 1. Write the PENDING record before calling the gateway.
-		//    ON CONFLICT DO NOTHING silently skips if a concurrent or duplicate request already inserted it.
-		//    Isolated in its own transaction so we don't hold a DB connection during the HTTP call below.
-		billingHistoryRepository.insertIfNotExist(subscriptionId, idempotencyKey);
+		// 1. Insert PENDING — committed immediately so the gateway call runs with no open connection.
+		transactionTemplate.executeWithoutResult(tx ->
+			billingHistoryRepository.insertIfNotExist(subscriptionId, idempotencyKey)
+		);
 
-		// 2. If a previous *committed* attempt already reached a final state, return it immediately.
-		//    This fires when the client sends the same request twice (not on @Retry retries, because
-		//    a rolled-back transaction leaves no row behind).
+		// 2. If a previous committed attempt already reached a final state, return it immediately.
 		var existing = billingHistoryRepository.findByIdempotencyKey(idempotencyKey);
 		if (existing.isPresent() && existing.get().getStatus() != BillingHistoryStatus.PENDING) {
 			BillingHistoryStatus finalStatus = existing.get().getStatus();
@@ -57,18 +55,28 @@ public class BillingFacadeImpl implements BillingFacade {
 			return new ChargeResult(success, existing.get().getGatewayTransactionId(), success ? null : "Tentativa anterior recusada");
 		}
 
-		// 3. Call the gateway OUTSIDE any transaction — an HTTP call to an external service must
-		//    never hold a DB connection open. The Idempotency-Key header ensures the gateway deduplicates.
-		PaymentGatewayClient.GatewayResponse response =
-			paymentGatewayClient.charge(idempotencyKey, paymentToken, plan.getPrice());
+		// 3. Call the gateway — no open DB connection at this point.
+		PaymentGatewayClient.GatewayResponse response;
+		try {
+			response = paymentGatewayClient.charge(idempotencyKey, paymentToken, plan.getPrice());
+		} catch (RuntimeException e) {
+			// Circuit breaker open or infra failure — clean up PENDING row and surface as a declined charge.
+			// The caller (SubscriptionWriteService) will revert the subscription and return 422 to the client.
+			log.warn("⚠️ [COBRANÇA INICIAL] Gateway indisponível para sub {}. Revertendo. Causa: {}", subscriptionId, e.getMessage());
+			transactionTemplate.executeWithoutResult(tx ->
+				billingHistoryRepository.updateResult(idempotencyKey, BillingHistoryStatus.FAILED, null)
+			);
+			return new ChargeResult(false, null, "Gateway de pagamentos indisponível. Tente novamente mais tarde.");
+		}
 
 		BillingHistoryStatus status = response.isSuccess()
 			? BillingHistoryStatus.SUCCESS
 			: BillingHistoryStatus.FAILED;
 
-		// 4. Persist the result in its own transaction. Only updates the row if still PENDING —
-		//    guards against a race where a previous timed-out attempt already wrote SUCCESS.
-		billingHistoryRepository.updateResult(idempotencyKey, status, response.transactionId());
+		// 4. Persist the final result in its own committed transaction.
+		transactionTemplate.executeWithoutResult(tx ->
+			billingHistoryRepository.updateResult(idempotencyKey, status, response.transactionId())
+		);
 
 		if (response.isSuccess()) {
 			log.info("✅ [COBRANÇA INICIAL] Sub {} aprovada pelo gateway. txId={}", subscriptionId, response.transactionId());
@@ -79,12 +87,3 @@ public class BillingFacadeImpl implements BillingFacade {
 		return new ChargeResult(response.isSuccess(), response.transactionId(), response.errorMessage());
 	}
 }
-
-
-
-
-
-
-
-
-

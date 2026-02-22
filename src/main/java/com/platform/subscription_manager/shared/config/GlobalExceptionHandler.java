@@ -1,5 +1,6 @@
 package com.platform.subscription_manager.shared.config;
 
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -60,6 +61,16 @@ public class GlobalExceptionHandler {
 	public ProblemDetail handleUnprocessable(UnprocessableEntityException ex) {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.valueOf(422), ex.getMessage());
 		problem.setTitle("Unprocessable Entity");
+		return problem;
+	}
+
+	@ExceptionHandler(CallNotPermittedException.class)
+	public ProblemDetail handleCircuitBreakerOpen(CallNotPermittedException ex) {
+		log.warn("🔴 [CIRCUIT BREAKER] Chamada rejeitada: {}", ex.getMessage());
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+			HttpStatus.SERVICE_UNAVAILABLE,
+			"Gateway de pagamentos temporariamente indisponível. Tente novamente em instantes.");
+		problem.setTitle("Service Unavailable");
 		return problem;
 	}
 

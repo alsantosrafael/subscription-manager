@@ -35,6 +35,12 @@
 			props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JacksonJsonSerializer.class);
 			props.put(JacksonJsonSerializer.ADD_TYPE_INFO_HEADERS, true);
 
+			props.put(ProducerConfig.LINGER_MS_CONFIG, 5);
+			props.put(ProducerConfig.BATCH_SIZE_CONFIG, 65_536);
+			props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "snappy");
+			props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
+			props.put(ProducerConfig.ACKS_CONFIG, "all");
+
 			return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(props));
 		}
 
@@ -49,6 +55,11 @@
 			props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JacksonJsonDeserializer.class);
 
 			props.put(JacksonJsonDeserializer.TRUSTED_PACKAGES, "*");
+
+			props.put(ConsumerConfig.FETCH_MIN_BYTES_CONFIG, 1_024);
+			props.put(ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, 500);
+			props.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, 300_000);
+
 			return new DefaultKafkaConsumerFactory<>(props);
 		}
 
