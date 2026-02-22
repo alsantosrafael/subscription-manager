@@ -49,6 +49,8 @@ O perfil `local` ativa o WireMock (mock do gateway de pagamento) e o seeder de d
 | Serviço | URL |
 |---|---|
 | API | `http://localhost:8080` |
+| **Swagger UI** | **`http://localhost:8080/swagger-ui.html`** |
+| **OpenAPI JSON** | **`http://localhost:8080/v3/api-docs`** |
 | Prometheus | `http://localhost:9090` |
 | Métricas (raw) | `http://localhost:8080/actuator/prometheus` |
 
@@ -308,7 +310,10 @@ curl -s http://localhost:8080/v1/admin/subscriptions \
 - [x] API para cadastrar usuários
 - [x] API para criar assinatura — um usuário só pode ter uma assinatura ativa por vez
 - [x] Assinatura com `id`, `userId`, `plano`, `dataInicio`, `dataExpiracao`, `status`
-- [x] Planos: `BASICO` (R$ 19,90), `PREMIUM` (R$ 39,90), `FAMILIA` (R$ 59,90)
+- [x] Planos: 
+    - `BASICO` (R$ 19,90), 
+    - `PREMIUM` (R$ 39,90) ,
+    - `FAMILIA` (R$ 59,90)
 - [x] Agendador que renova assinaturas automaticamente no vencimento
 - [x] Suspensão após 3 tentativas de renovação falhadas
 - [x] Endpoint de cancelamento com acesso preservado até o fim do ciclo
@@ -351,86 +356,85 @@ curl -s http://localhost:8080/v1/admin/subscriptions \
 - [ ] Notificações ao usuário (e-mail / push) em eventos de cobrança, suspensão e expiração
 - [ ] Testes de integração end-to-end com Testcontainers (PostgreSQL + Kafka + Redis reais)
 - [ ] Deploy em cloud (AWS ECS / GCP Cloud Run) com variáveis de ambiente seguras
-- [ ] Documentação da API com OpenAPI / Swagger UI
+- [x] Documentação da API com OpenAPI / Swagger UI
+- [ ] Estratégia de write-behind e flush de assinaturas em uma tópico de processamento em lote
+- [ ] Contemplar meios de pagamento e escrever estratégias para chamadas dos gateways de pagamento
+- [ ] Rodar mais testes de carga com K6 -> ajustar JVM, GC, memória e CPU, melhorar configs do Kafka
 - [ ] Suporte a múltiplas moedas e gateways de pagamento
 
 ---
 
 ## 🏛️ Arquitetura
 
+### Rascunho de projeto
+
+![System Design](./system-design.png)
+
+---
+
 ### Visão completa — fronteiras externas, módulos internos e infraestrutura
 
 ```
-                        MUNDO EXTERNO
-  ┌─────────────┐     ┌──────────────────────────────────────────┐
-  │   Frontend  │     │         BFF / API Gateway                │
-  │  (Web/App)  │────▶│  - Autentica JWT                         │
-  └─────────────┘     │  - Extrai userId do token                │
-                      │  - Injeta X-User-Id: <uuid> no header    │
-                      │  - Roteia para serviços internos         │
-                      └──────────────────┬───────────────────────┘
-                                         │ HTTP (rede interna)
-                                         │ X-User-Id: <uuid>
-                      ╔══════════════════▼═══════════════════════════════════════╗
-                      ║              Subscription Manager                        ║
-                      ║           (Spring Modulith Monolith)                     ║
-                      ║                                                          ║
-                      ║  ┌──────────────┐    ┌──────────────────────────────┐   ║
-                      ║  │     user     │◄───│       subscription           │   ║
-                      ║  │              │    │                              │   ║
-                      ║  │ POST /users  │    │ POST /subscriptions          │   ║
-                      ║  │ GET  /users  │    │ GET  /subscriptions/{id}     │   ║
-                      ║  │              │    │ PATCH /subscriptions/{id}/   │   ║
-                      ║  │ UserFacade   │    │       cancel                 │   ║
-                      ║  │ (Port/iface) │    │                              │   ║
-                      ║  └──────────────┘    │ RenewalOrchestratorService   │   ║
-                      ║                      │ SubscriptionResultListener   │   ║
-                      ║                      │ SubscriptionCacheUpdater     │   ║
-                      ║                      │                              │   ║
-                      ║                      │ SubscriptionWriteService     │   ║
-                      ║                      │ SubscriptionService          │   ║
-                      ║                      └──────────────────────────────┘   ║
-                      ║                                                          ║
-                      ║  ┌──────────────────────────────────────────────────┐   ║
-                      ║  │                   billing                        │   ║
-                      ║  │                                                  │   ║
-                      ║  │  BillingFacade (Port/iface)                      │   ║
-                      ║  │  BillingFacadeImpl                               │   ║
-                      ║  │  BillingWorker  ←── Kafka: subscription.renewals │   ║
-                      ║  │  PaymentTokenPort (Port/iface)                   │   ║
-                      ║  │  PaymentGatewayClient ──────────────────────────────────────┐
-                      ║  │  BillingHistoryRepository                        │   ║      │
-                      ║  │                                                  │   ║      │
-                      ║  │  POST /admin/billing/trigger-sweep               │   ║      │
-                      ║  └──────────────────────────────────────────────────┘   ║      │
-                      ║                                                          ║      │
-                      ║  ┌──────────────────────────────────────────────────┐   ║      │
-                      ║  │                    shared                        │   ║      │
-                      ║  │  Events (Records) · Exceptions · Kafka Config    │   ║      │
-                      ║  │  PaymentTokenConverter (AES-256-GCM)             │   ║      │
-                      ║  │  DTOs / Records (fronteira de módulo)            │   ║      │
-                      ║  └──────────────────────────────────────────────────┘   ║      │
-                      ╚══════════════════════════════════════════════════════════╝      │
-                                         │                                             │
-              ┌──────────────────────────┼────────────────────┐                        │
-              │                          │                    │                        │
-       ┌──────▼─────┐            ┌───────▼──────┐   ┌────────▼──────┐                 │
-       │ PostgreSQL │            │    Kafka     │   │     Redis      │                 │
-       │            │            │ .renewals    │   │ subscription:  │                 │
-       │ users      │            │ .billing-    │   │ user:{userId}  │                 │
-       │ subscript. │            └──────────────┘                                      │
-       │ billing_h. │                                                          ┌────────▼──────────┐
-       │ event_pub. │                                                          │  Gateway Pagamento │
-       │ shedlock   │                                                          │  (Externo)         │
-       └────────────┘                                                          │                   │
-                                                                               │  POST /v1/charges  │
-                                                                               │  (Stripe/Pagar.me) │
-                                                                               │                   │
-                                                                               │  ← WireMock em     │
-                                                                               │    local apenas,   │
-                                                                               │    não pertence    │
-                                                                               │    ao sistema →    │
-                                                                               └───────────────────┘
+  ┌─────────────┐     ┌─────────────────────────────────────────────────┐
+  │   Frontend  │     │              BFF / API Gateway                  │
+  │  (Web/App)  │────▶│  - Autentica JWT                                │
+  └─────────────┘     │  - Extrai userId do token                       │
+                      │  - Injeta X-User-Id: <uuid> no header           │
+                      │  - Roteia para o Subscription Manager           │
+                      └──────────────────────┬──────────────────────────┘
+                                             │ HTTP  X-User-Id: <uuid>
+                      ╔══════════════════════▼══════════════════════════════╗
+                      ║           Subscription Manager                      ║
+                      ║        (Spring Modulith Monolith)                   ║
+                      ║                                                     ║
+                      ║  ┌────────────────┐  ┌───────────────────────────┐ ║
+                      ║  │     user       │◄─│       subscription        │ ║
+                      ║  │                │  │                           │ ║
+                      ║  │ POST /v1/users │  │ POST /v1/subscriptions    │ ║
+                      ║  │ GET  /v1/users │  │ GET  /v1/subscriptions/id │ ║
+                      ║  │                │  │ PATCH .../cancel          │ ║
+                      ║  │ UserFacade     │  │                           │ ║
+                      ║  │ (Port/iface)   │  │ SubscriptionService       │ ║
+                      ║  └────────────────┘  │ SubscriptionWriteService  │ ║
+                      ║                      │ RenewalOrchestratorService │ ║
+                      ║                      │ SubscriptionResultListener │ ║
+                      ║                      │ SubscriptionCacheUpdater   │ ║
+                      ║                      └───────────────────────────┘ ║
+                      ║                                                     ║
+                      ║  ┌─────────────────────────────────────────────┐   ║
+                      ║  │                  billing                    │   ║
+                      ║  │                                             │   ║
+                      ║  │  BillingFacade      (Port/iface)            │   ║
+                      ║  │  BillingFacadeImpl                          │   ║
+                      ║  │  BillingWorker ◄── subscription.renewals    │   ║
+                      ║  │  PaymentTokenPort   (Port/iface)            │   ║
+                      ║  │  PaymentGatewayClient ──────────────────────────────┐
+                      ║  │  BillingHistoryRepository                   │   ║   │
+                      ║  │                                             │   ║   │ HTTP
+                      ║  │  POST /v1/admin/billing/trigger-sweep       │   ║   │ POST /v1/charges
+                      ║  │  GET  /v1/admin/subscriptions               │   ║   │
+                      ║  │  POST /v1/admin/subscriptions/{id}/suspend  │   ║   ▼
+                      ║  └─────────────────────────────────────────────┘   ║  ┌─────────────────────┐
+                      ║                                                     ║  │  Gateway Pagamento  │
+                      ║  ┌─────────────────────────────────────────────┐   ║  │     (Externo)       │
+                      ║  │                   shared                    │   ║  │                     │
+                      ║  │  Events (Records) · Exceptions              │   ║  │  Stripe / Pagar.me  │
+                      ║  │  PaymentTokenConverter (AES-256-GCM)        │   ║  │  ou qualquer outro  │
+                      ║  │  Kafka Config · DTOs / Records              │   ║  │                     │
+                      ║  └─────────────────────────────────────────────┘   ║  │  ← WireMock apenas  │
+                      ╚═════════════════════════════════════════════════════╝  │    no perfil local  │
+                                             │                                 └─────────────────────┘
+              ┌──────────────────────────────┼──────────────────┐
+              │                              │                  │
+       ┌──────▼──────┐              ┌────────▼──────┐   ┌───────▼──────────┐
+       │  PostgreSQL │              │     Kafka     │   │      Redis       │
+       │             │              │               │   │                  │
+       │  users      │              │  .renewals    │   │  subscription:   │
+       │  subscript. │              │  .billing-    │   │  user:{userId}   │
+       │  billing_h. │              │   results     │   │                  │
+       │  event_pub. │              └───────────────┘   └──────────────────┘
+       │  shedlock   │
+       └─────────────┘
 ```
 
 ---
@@ -561,7 +565,54 @@ Frontend / BFF
 
 ---
 
-### 3. Virtual Threads (Java 21) — paralelismo sem custo de threads de plataforma
+### 3. Saga coreografada — coordenação de transações distribuídas sem orquestrador central
+**Decisão:** O fluxo de renovação é implementado como uma **saga coreografada** composta por três participantes autônomos que se comunicam exclusivamente via eventos Kafka. Não existe um orquestrador central que conheça o fluxo completo.
+
+```
+Participante 1             Participante 2                  Participante 3
+──────────────────         ──────────────────────────      ──────────────────────────────
+RenewalOrchestrator        BillingWorker                   SubscriptionResultListener
+(módulo subscription)      (módulo billing)                (módulo subscription)
+        │                          │                                  │
+        │  publica                 │  consome                         │
+        ├─ RenewalRequestedEvent ─▶│  subscription.renewals           │
+        │  (Outbox → PostgreSQL)   │                                  │
+        │                          │  chama gateway                   │
+        │                          │  [Circuit Breaker + Retry]       │
+        │                          │                                  │
+        │                          │  publica                         │
+        │                          ├─ BillingResultEvent ────────────▶│  subscription.billing-results
+        │                          │  (SUCCESS | FAILED)              │
+        │                          │                                  │  SUCESSO → renewAtomically()
+        │                          │                                  │  FALHA   → incrementFailure()
+        │                          │                                  │  3 falhas → suspendAtomically()
+        │                          │                                  │
+        │                          │                                  │  publica SubscriptionUpdatedEvent
+        │                          │                                  │  → Redis (cache invalidation-free)
+```
+
+**Garantias combinadas — Outbox + Idempotência + ACK manual:**
+
+| Garantia | Mecanismo |
+|---|---|
+| Evento não se perde entre DB e Kafka | Outbox Pattern — `event_publication` no mesmo TX do UPDATE |
+| Mensagem reentregue não cobra duas vezes | Idempotência dupla: lookup + constraint `UNIQUE` no banco |
+| Falha no consumer não perde mensagem | ACK manual (`MANUAL_IMMEDIATE`) — Kafka reentrega se não ackado |
+| Dois nós não processam o mesmo evento | `INSERT ... ON CONFLICT DO NOTHING` — o banco é árbitro |
+| Falha no gateway não corrompe o estado | `updateResult(FAILED)` persiste antes do ACK; retry via Kafka |
+| Estado do banco nunca ultrapassa o Redis | `SubscriptionUpdatedEvent` publicado **após** o commit atômico |
+
+**Por que coreografada e não orquestrada?**
+
+Uma saga **orquestrada** exigiria um serviço central (`BillingOrchestrator`) que conhece cada passo, chama cada participante e decide compensações. Isso cria um ponto central de falha e forte acoplamento de conhecimento.
+
+A saga **coreografada** distribui a responsabilidade: cada participante sabe apenas o que fazer com os eventos que recebe e o que publicar em resposta. O `BillingWorker` não sabe que existe um `SubscriptionResultListener`; o `SubscriptionResultListener` não sabe que existe um `RenewalOrchestratorService`. O acoplamento é apenas pelo contrato do evento (Record Java imutável), não por chamada direta.
+
+Neste domínio a escolha é natural: o fluxo tem exatamente dois saltos (`Scheduler → BillingWorker → ResultListener`) sem ramificações complexas de compensação — o caso ideal para coreografia. Se o número de participantes ou as compensações crescerem (ex: notificação por e-mail, atualização de CRM), um orquestrador via Spring State Machine ou Temporal seria a evolução correta.
+
+---
+
+### 4. Virtual Threads (Java 21) — paralelismo sem custo de threads de plataforma
 **Decisão:** `BillingWorker` usa `Executors.newVirtualThreadPerTaskExecutor()` para processar cada mensagem do lote em paralelo. `spring.threads.virtual.enabled=true` ativa Virtual Threads também no Tomcat.
 
 ```
@@ -578,7 +629,7 @@ Lote Kafka (até 100 msgs)
 
 ---
 
-### 4. Split de transações no BillingWorker — conexão livre durante I/O externa
+### 5. Split de transações no BillingWorker — conexão livre durante I/O externa
 **Decisão:** Três blocos `TransactionTemplate` separados por operação, com a chamada HTTP ao gateway executando *fora* de qualquer transação aberta.
 
 ```
@@ -593,13 +644,13 @@ insertIfNotExist()         findByIdempotencyKey()       gateway.charge()   updat
 
 ---
 
-### 5. `saveAndFlush` na inserção idempotente — visibilidade imediata entre threads
+### 6. `saveAndFlush` na inserção idempotente — visibilidade imediata entre threads
 **Decisão:** O `BillingHistoryRepository` usa `saveAndFlush()` ao inserir o registro `PENDING`, forçando o flush para o banco dentro da transação corrente antes de retornar.  
 **Justificativa:** Com Virtual Threads processando o mesmo lote em paralelo, duas threads podem tentar inserir a mesma `idempotency_key` quase simultaneamente. O `saveAndFlush` garante que o `INSERT` chegue ao banco imediatamente, fazendo a constraint `UNIQUE` disparar para a thread perdedora ainda dentro da sua transação — sem esperar o commit natural do Hibernate. Sem isso, o Hibernate poderia enfileirar o INSERT e só tentar persistir no commit, quando a janela de detecção de duplicata já teria passado.
 
 ---
 
-### 6. Ordem das chamadas no fluxo de criação de assinatura — DB antes do gateway
+### 7. Ordem das chamadas no fluxo de criação de assinatura — DB antes do gateway
 **Decisão:** `SubscriptionWriteService.createAndCharge()` segue esta ordem: (1) `saveSubscription()` persiste a assinatura em transação própria, (2) `BillingFacadeImpl.chargeForNewSubscription()` chama o gateway fora de qualquer transação, (3) em caso de recusa, `revertReactivation()` restaura o status em nova transação.
 
 ```
@@ -619,7 +670,7 @@ COMMIT                     COMMIT parcial por etapa            COMMIT
 
 ---
 
-### 7. Kafka — topologia de tópicos e estratégia de consumo
+### 8. Kafka — topologia de tópicos e estratégia de consumo
 **Decisão:** Dois tópicos com consumer groups distintos e processamento em batch com ACK manual.
 
 ```
@@ -633,11 +684,11 @@ ACK: após allOf(chunk)         ACK: após commit da TX
 max-poll-records: 100          max-poll-records: 100
 ```
 
-**Justificativa:** Separar os tópicos permite que o `billing` module e o `subscription` module evoluam independentemente seus contratos de mensagem. O ACK manual (`MANUAL_IMMEDIATE`) garante que mensagens não são marcadas como consumidas antes de serem processadas — em caso de falha, o Kafka reentrga o lote. O `SubscriptionResultListener` processa o lote inteiro em uma única transação com Hibernate JDBC batching (`batch_size=100`), reduzindo round-trips ao banco de N para ~1.
+**Justificativa:** Separar os tópicos permite que o `billing` module e o `subscription` module evoluam independentemente seus contratos de mensagem. O ACK manual (`MANUAL_IMMEDIATE`) garante que mensagens não são marcadas como consumidas antes de serem processadas — em caso de falha, o Kafka reentrega o lote. O `SubscriptionResultListener` processa o lote inteiro em uma única transação com Hibernate JDBC batching (`batch_size=100`), reduzindo round-trips ao banco de N para ~1.
 
 ---
 
-### 8. Idempotência em duas camadas — proteção contra at-least-once do Kafka
+### 9. Idempotência em duas camadas — proteção contra at-least-once do Kafka
 **Decisão:** Chave de idempotência no formato `{subscriptionId}-{ano}-{mes}-attempt-{n}`, inserida como `PENDING` antes da chamada ao gateway. Constraint `UNIQUE` no banco como árbitro final.
 
 ```
@@ -655,7 +706,7 @@ insertIfNotExist("sub1-2026-02-0")   insertIfNotExist("sub1-2026-02-0")
 
 ---
 
-### 9. `X-User-Id` via header — design para BFF / API Gateway
+### 10. `X-User-Id` via header — design para BFF / API Gateway
 **Decisão:** Os endpoints `GET /v1/subscriptions/{id}` e `PATCH /v1/subscriptions/{id}/cancel` recebem o `userId` pelo header `X-User-Id` em vez de exigir autenticação direta.
 
 ```
@@ -756,24 +807,6 @@ Jitter resolve *thundering herd* quando milhares de clientes independentes acord
 2. **A proteção real contra duplicatas é o `WHERE billingAttempts = :expectedAttempts`** em `incrementFailureAtomic` — esse guard atômico rejeita silenciosamente qualquer segundo update para a mesma tentativa, independente de timing.
 3. **Jitter no campo `nextRetryAt` torna o sistema não-determinístico** — o campo é a porta de entrada do sweep (`nextRetryAt <= now`). Fuzzá-lo com `Random` torna os testes de retry não-reproduzíveis e dificulta debugging ("por que essa sub não foi processada no ciclo esperado?").
 
-**Bug colateral corrigido junto — leitura stale do cache Hibernate:**
-
-O código anterior chamava `repository.findById(sub.getId())` ao final de `handleFailure` para construir o evento de cache, na intenção de ler o estado pós-UPDATE. Isso estava **errado**: updates atômicos via JPQL (`@Modifying`) bypassam o first-level cache do Hibernate. Chamar `findById` dentro da mesma transação retorna o snapshot pré-update da memória — escrevendo status e `autoRenew` incorretos no Redis (ex: `status=ACTIVE` para uma sub recém-suspensa).
-
-A correção: derivar o evento diretamente do que sabemos que o UPDATE escreveu — `resultingStatus` (SUSPENDED ou ACTIVE) e `resultingAutoRenew` (false ou true) — sem nenhuma query extra, exatamente como `handleSuccess` já fazia com `sub.applyRenewal()`.
-
-```
-ANTES (bugado):
-  suspendSubscriptionAtomic() → DB: status=SUSPENDED, autoRenew=false
-  findById() dentro da mesma TX → Hibernate L1 cache → sub ainda com status=ACTIVE, autoRenew=true
-  Redis ← SubscriptionUpdatedEvent(status=ACTIVE)   ← ERRADO
-
-DEPOIS (correto):
-  suspendSubscriptionAtomic() → DB: status=SUSPENDED, autoRenew=false
-  resultingStatus = SUSPENDED, resultingAutoRenew = false  (derivado localmente)
-  Redis ← SubscriptionUpdatedEvent(status=SUSPENDED, autoRenew=false)  ← CORRETO
-```
-
 ---
 
 ### 13. Updates atômicos via JPQL como última linha de defesa contra duplicatas
@@ -794,16 +827,62 @@ DEPOIS (correto):
 
 ---
 
-### 16. TTL inteligente no Redis por status — prevenção de thundering herd
-**Decisão:** `SubscriptionCacheUpdater` não deleta chaves — sempre sobrescreve com TTL calculado por status:
-- `ACTIVE` / `CANCELED`: `max(expiringDate − now + 2h, 10min)` — entrada permanece quente até após o vencimento
-- `SUSPENDED` / `INACTIVE`: 1 hora — cache negativo para absorver reads senza bater no banco
+### 16. Atualização do Redis via eventos — write-through orientado a estado, não a invalidação
+**Decisão:** O Redis nunca é atualizado por invalidação (delete + re-read). Em cada ponto do sistema que muta o estado de uma assinatura, um `SubscriptionUpdatedEvent` é publicado **após o commit da transação** e o `SubscriptionCacheUpdater` reescreve a chave com o estado definitivo. Isso vale para todos os caminhos de escrita sem exceção.
 
-**Justificativa:** Deletar a chave ao invés de sobrescrever causaria *cache stampede*: todos os reads que chegassem naquele momento iriam ao banco simultaneamente. Com a entrada existindo (mesmo com status `SUSPENDED`), o primeiro read após a escrita encontra o cache populado. O TTL de 2h de buffer no ACTIVE garante que a entrada não expire antes do sweep de renovação reescrevê-la com o novo `expiringDate`.
+```
+Ponto de mutação                   Quem publica                    O que vai para o Redis
+──────────────────────────────     ─────────────────────────────   ──────────────────────────────────────
+POST /v1/subscriptions             SubscriptionWriteService        status=ACTIVE,  autoRenew=true
+PATCH .../cancel                   SubscriptionService             status=CANCELED, autoRenew=false
+Renovação bem-sucedida             SubscriptionResultListener      status=ACTIVE,  autoRenew=true, nova expiringDate
+Falha < 3 tentativas               SubscriptionResultListener      status=ACTIVE,  autoRenew=true, billingAttempts++
+3ª falha → suspensão               SubscriptionResultListener      status=SUSPENDED, autoRenew=false
+CANCELED vencida → INACTIVE        RenewalOrchestratorService      status=INACTIVE, autoRenew=false
+Admin force-suspend                AdminController                  status=SUSPENDED, autoRenew=false
+```
+
+**Por que write-through via evento e não invalidação?**
+
+A alternativa mais simples seria `redisTemplate.delete(key)` após cada escrita no banco e deixar o próximo `GET` recarregar do PostgreSQL. Essa abordagem tem três problemas neste domínio:
+
+1. **Cache stampede:** Se 50 requests chegarem logo após o delete de uma assinatura popular, todos irão ao banco simultaneamente antes que qualquer um reescreva o cache — exatamente o problema que o Redis deveria resolver.
+
+2. **Janela de inconsistência observável:** Entre o delete e o próximo read há uma janela onde o cache está vazio. Para assinaturas SUSPENDED ou INACTIVE isso significa que o frontend receberia dados desatualizados se acertasse essa janela — ou pior, dados antigos do banco antes do commit se a leitura fosse concorrente com a escrita.
+
+3. **Acoplamento read/write:** O write-path precisaria conhecer que existe um read-path que usa cache — o delete vira uma dependência implícita difícil de rastrear.
+
+Com write-through via evento, o estado do Redis é **sempre derivado do último evento confirmado pelo banco**. O `@TransactionalEventListener(AFTER_COMMIT)` garante que o evento só dispara após o commit ser durável — o Redis nunca fica à frente do banco nem fica atrás por mais tempo do que o processamento do evento (milissegundos).
+
+```
+INVALIDAÇÃO (evitado):                    WRITE-THROUGH VIA EVENTO (adotado):
+──────────────────────────────────        ──────────────────────────────────────
+TX: UPDATE subscriptions                  TX: UPDATE subscriptions
+COMMIT                                    COMMIT
+  │                                         │
+  ├── delete(key)  ← Redis vazio!           └── @TransactionalEventListener(AFTER_COMMIT)
+  │                                               └── SubscriptionCacheUpdater
+  └── próximo GET → banco → set(key)                   └── set(key, novoEstado, TTL)
+       ↑                                                    ← Redis atualizado atomicamente
+       janela de inconsistência                             ← sem janela de vazio
+```
+
+**`@TransactionalEventListener(AFTER_COMMIT)` como garantia de ordenação:**
+
+O Spring só entrega o evento ao `SubscriptionCacheUpdater` após o `COMMIT` ter retornado com sucesso. Se a transação fizer rollback, o evento é descartado — o Redis não recebe um estado que nunca existiu no banco. Se o processo morrer entre o commit e a entrega do evento, o Redis simplesmente mantém o estado anterior (ligeiramente stale), que expirará pelo TTL e será recarregado do banco na próxima leitura — sem corrupção.
 
 ---
 
-### 17. Kafka como backbone assíncrono — desacoplamento e resiliência na cobrança
+### 17. TTL inteligente no Redis por status — prevenção de cache stampede
+**Decisão:** `SubscriptionCacheUpdater` não deleta chaves — sempre sobrescreve com TTL calculado por status:
+- `ACTIVE` / `CANCELED`: `max(expiringDate − now + 2h, 10min)` — entrada permanece quente até após o vencimento
+- `SUSPENDED` / `INACTIVE`: 1 hora — cache negativo para absorver reads sem bater no banco
+
+**Justificativa:** Deletar a chave ao invés de sobrescrever causaria *cache stampede*: todos os reads que chegassem naquele momento iriam ao banco simultaneamente. Com a entrada existindo (mesmo com status `SUSPENDED`), o primeiro read após a escrita encontra o cache populado. O TTL de 2h de buffer no `ACTIVE` garante que a entrada não expire antes do sweep de renovação reescrevê-la com o novo `expiringDate`.
+
+---
+
+### 18. Kafka como backbone assíncrono — desacoplamento e resiliência na cobrança — desacoplamento e resiliência na cobrança
 **Decisão:** A renovação não é processada de forma síncrona no scheduler. O scheduler publica eventos em `subscription.renewals`; o `BillingWorker` consome e processa independentemente, publicando resultados em `subscription.billing-results`.
 
 ```
@@ -821,7 +900,7 @@ Scheduler chama gateway diretamente       Scheduler publica evento e termina
 
 ---
 
-### 18. Facades e Ports — isolamento entre módulos e inversão de dependência
+### 19. Facades e Ports — isolamento entre módulos e inversão de dependência
 **Decisão:** A comunicação entre módulos é mediada exclusivamente por interfaces públicas — nunca por acesso direto a repositórios ou serviços de outro módulo.
 
 ```
@@ -843,7 +922,7 @@ PaymentTokenAdapter
 
 ---
 
-### 19. DTOs e Records como fronteira do domínio — proteção das entidades
+### 20. DTOs e Records como fronteira do domínio — proteção das entidades
 **Decisão:** Entidades JPA nunca saem dos módulos. A comunicação entre camadas e entre módulos usa exclusivamente DTOs e Records imutáveis.
 
 ```
@@ -865,6 +944,6 @@ CreateSubscriptionDTO ──▶ SubscriptionService ──▶ Subscription (enti
 
 ---
 
-### 20. Gradle com Kotlin DSL — build tipado e verificado em tempo de compilação
+### 21. Gradle com Kotlin DSL — build tipado e verificado em tempo de compilação
 **Decisão:** O build usa `build.gradle.kts` (Kotlin DSL) em vez do Groovy DSL padrão.  
 **Justificativa:** O Kotlin DSL oferece verificação de tipos em tempo de compilação no script de build — erros de configuração são detectados pela IDE antes mesmo de executar o Gradle. O autocomplete funciona de verdade, sem depender de heurísticas do plugin Groovy. Em projetos com múltiplos módulos ou configurações complexas de plugins, a diferença de confiabilidade é significativa.

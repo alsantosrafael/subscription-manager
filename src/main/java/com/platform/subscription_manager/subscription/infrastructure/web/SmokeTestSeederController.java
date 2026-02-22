@@ -2,6 +2,10 @@ package com.platform.subscription_manager.subscription.infrastructure.web;
 
 import com.github.tomakehurst.wiremock.client.WireMock;
 import com.platform.subscription_manager.shared.config.PaymentTokenConverter;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,6 +25,11 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/test")
 @Profile("local")
+@Tag(name = "Test Utils", description = """
+	Utilitários de teste — disponíveis **apenas no perfil `local`**, nunca em produção.
+	Use `POST /api/test/seed` para popular o banco com dados representando todos os perfis de negócio
+	antes de executar o sweep manual via `POST /v1/admin/billing/trigger-sweep`.
+	""")
 public class SmokeTestSeederController {
 
 	private static final Logger log = LoggerFactory.getLogger(SmokeTestSeederController.class);
@@ -37,8 +46,40 @@ public class SmokeTestSeederController {
 		this.baseDelayMinutes = baseDelayMinutes;
 	}
 
+	@Operation(
+		summary = "Popular banco com dados de teste",
+		description = """
+			Limpa todas as tabelas (assinaturas, usuários, histórico, outbox, ShedLock) e insere
+			`count` assinaturas distribuídas entre os 4 perfis de negócio:
+
+			| % | Perfil | Token | billingAttempts | Resultado esperado após sweep |
+			|---|---|---|---|---|
+			| 70% | Renovação normal | `tok_test_success` | 0 | `ACTIVE` renovada |
+			| 10% | Retry — falhou 1x | `tok_test_success` | 1 | `ACTIVE` renovada na 2ª tentativa |
+			| 10% | Beira do abismo | `tok_test_always_fail` | 2 | `SUSPENDED` (3ª falha dispara suspensão) |
+			| 10% | Cancelados vencidos | `tok_test_success` | 0 | `INACTIVE` (expiringDate = hoje) |
+
+			**Notas:**
+			- Os tokens são armazenados criptografados (AES-256-GCM) — o seeder usa o `PaymentTokenConverter`
+			- O `nextRetryAt` é calculado espelhando exatamente a fórmula de backoff do `SubscriptionResultListener`
+			- O registro ShedLock é resetado para que o sweep possa ser acionado imediatamente
+			- O WireMock é reconfigurado via API para garantir cenários limpos
+
+			**Fluxo recomendado:**
+			```
+			POST /api/test/seed?count=20
+			POST /v1/admin/billing/trigger-sweep
+			GET  /v1/admin/subscriptions        ← observe as transições após ~3s
+			```
+			""",
+		responses = {
+			@ApiResponse(responseCode = "200", description = "Seed concluído — corpo contém o total de registros inseridos")
+		}
+	)
 	@PostMapping("/seed")
-	public String seedDatabase(@RequestParam(defaultValue = "2000") int count) {
+	public String seedDatabase(
+		@Parameter(description = "Número de assinaturas a criar. Recomendado: 20 para demos, 2000 para testes de carga.")
+		@RequestParam(defaultValue = "2000") int count) {
 		log.info("🧹 Limpando tabelas...");
 		jdbcTemplate.execute("TRUNCATE TABLE billing_history CASCADE;");
 		jdbcTemplate.execute("TRUNCATE TABLE event_publication CASCADE;");

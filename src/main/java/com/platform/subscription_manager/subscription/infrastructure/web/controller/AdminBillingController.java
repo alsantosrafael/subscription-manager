@@ -4,6 +4,11 @@ import com.platform.subscription_manager.subscription.application.services.Renew
 import com.platform.subscription_manager.subscription.domain.repositories.SubscriptionRepository;
 import com.platform.subscription_manager.shared.infrastructure.messaging.SubscriptionUpdatedEvent;
 import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -23,6 +28,11 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/v1/admin")
+@Tag(name = "Admin", description = """
+	Endpoints de operação e observabilidade.
+	Permitem acionar o scheduler manualmente, inspecionar o estado de todas as assinaturas
+	e forçar transições de estado para demonstração — não devem ser expostos em produção.
+	""")
 public class AdminBillingController {
 
 	private static final Logger log = LoggerFactory.getLogger(AdminBillingController.class);
@@ -45,6 +55,20 @@ public class AdminBillingController {
 		this.transactionTemplate = transactionTemplate;
 	}
 
+	@Operation(
+		summary = "Disparar sweep de renovações",
+		description = """
+			Aciona imediatamente o mesmo fluxo que o scheduler executa a cada minuto:
+			1. Identifica assinaturas elegíveis (`ACTIVE`, `autoRenew=true`, `nextRetryAt ≤ agora`, `billingAttempts < maxAttempts`)
+			2. Persiste `nextRetryAt = now + inFlightGuardMinutes` e despacha evento via Kafka (Outbox Pattern)
+			3. Move assinaturas `CANCELED` cujo `expiringDate ≤ agora` para `INACTIVE`
+
+			Use após `POST /api/test/seed` para observar as transições de estado sem esperar 1 minuto.
+			""",
+		responses = {
+			@ApiResponse(responseCode = "202", description = "Sweep iniciado — processamento assíncrono via Kafka (aguarde ~3s para ver os resultados)")
+		}
+	)
 	@PostMapping("/billing/trigger-sweep")
 	public ResponseEntity<Void> triggerSweep() {
 		log.info("⚙️ Gatilho manual de faturamento acionado via API Administrativa.");
@@ -52,12 +76,17 @@ public class AdminBillingController {
 		return ResponseEntity.accepted().build();
 	}
 
-	/**
-	 * Returns all subscriptions ordered by status and billing_attempts DESC.
-	 * Intended for demo/observability — lets the evaluator confirm state transitions
-	 * without needing direct DB access.
-	 * Uses JdbcTemplate directly to avoid triggering PaymentTokenConverter on the entity.
-	 */
+	@Operation(
+		summary = "Listar todas as assinaturas",
+		description = """
+			Retorna todas as assinaturas ordenadas por status (SUSPENDED primeiro) e `billing_attempts DESC`.
+			Use para inspecionar transições de estado durante demonstrações — evita acesso direto ao banco.
+			Não expõe o `payment_token` (sempre nulo neste endpoint).
+			""",
+		responses = {
+			@ApiResponse(responseCode = "200", description = "Lista de assinaturas com campos operacionais")
+		}
+	)
 	@GetMapping("/subscriptions")
 	public ResponseEntity<List<Map<String, Object>>> listSubscriptions() {
 		List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
@@ -86,14 +115,30 @@ public class AdminBillingController {
 		return ResponseEntity.ok(rows);
 	}
 
-	/**
-	 * Force-suspends a subscription immediately.
-	 * Reuses the same suspendSubscriptionAtomic path the scheduler uses — the evaluator
-	 * can verify the suspension scenario without waiting for 3 real billing cycles.
-	 * Returns 404 if the subscription is not found or is not in an ACTIVE state.
-	 */
+	@Operation(
+		summary = "Forçar suspensão de assinatura",
+		description = """
+			Suspende imediatamente uma assinatura `ACTIVE` usando o mesmo caminho atômico do scheduler
+			(`suspendSubscriptionAtomic`) — garantia de idempotência e sem race conditions.
+
+			Útil para demonstrar o cenário de suspensão sem aguardar 3 ciclos reais de falha de pagamento.
+
+			**Efeitos:**
+			- `status` → `SUSPENDED`
+			- `autoRenew` → `false`
+			- `nextRetryAt` → `null`
+			- Cache Redis atualizado via evento `SubscriptionUpdatedEvent`
+
+			Retorna `404` se a assinatura não existir ou não estiver em estado `ACTIVE`.
+			""",
+		responses = {
+			@ApiResponse(responseCode = "204", description = "Assinatura suspensa com sucesso"),
+			@ApiResponse(responseCode = "404", description = "Assinatura não encontrada ou não está ACTIVE", content = @Content)
+		}
+	)
 	@PostMapping("/subscriptions/{id}/force-suspend")
-	public ResponseEntity<Void> forceSuspend(@PathVariable UUID id) {
+	public ResponseEntity<Void> forceSuspend(
+		@Parameter(description = "UUID da assinatura a suspender", required = true) @PathVariable UUID id) {
 		return subscriptionRepository.findById(id)
 			.filter(sub -> sub.getStatus() == SubscriptionStatus.ACTIVE)
 			.map(sub -> {

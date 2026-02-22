@@ -1,0 +1,533 @@
+{
+  "info": {
+    "name": "Subscription Manager API",
+    "description": "Coleção completa para o Subscription Manager.\n\n## Como usar\n1. Importe este arquivo no Postman (File → Import)\n2. Selecione o environment **Local** (já embutido como variável de coleção)\n3. Execute os requests na ordem dos cenários descritos no README\n\n## Variáveis de coleção\n- `baseUrl` → `http://localhost:8080`\n- `userId` → preenchido automaticamente pelo request \"Criar Usuário\"\n- `subscriptionId` → preenchido automaticamente pelo request \"Criar Assinatura\"\n\n## Pré-requisitos\n- Aplicação rodando: `./gradlew bootRun --args='--spring.profiles.active=local'`\n- Infraestrutura rodando: `docker compose up -d`",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "userId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "subscriptionId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Users",
+      "description": "Gerenciamento de usuários. Crie um usuário antes de criar uma assinatura.",
+      "item": [
+        {
+          "name": "Criar Usuário",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('userId', body.id);",
+                  "    console.log('userId salvo:', body.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"João Silva\",\n  \"email\": \"joao.silva@example.com\",\n  \"document\": \"12345678901\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users"]
+            },
+            "description": "Cria um novo usuário. O `id` retornado é salvo automaticamente na variável `userId` para uso nos próximos requests."
+          },
+          "response": [
+            {
+              "name": "201 - Usuário criado",
+              "status": "Created",
+              "code": 201,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n  \"name\": \"João Silva\",\n  \"document\": \"12345678901\",\n  \"email\": \"joao.silva@example.com\",\n  \"createdAt\": \"2026-02-22T10:00:00\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Buscar Usuário por ID",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/users/{{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users", "{{userId}}"]
+            },
+            "description": "Retorna os dados do usuário. Substitua `{{userId}}` por um UUID válido ou execute \"Criar Usuário\" primeiro."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Subscriptions",
+      "description": "Ciclo de vida de assinaturas — criação, consulta e cancelamento.",
+      "item": [
+        {
+          "name": "Criar Assinatura (tok_test_success)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('subscriptionId', body.id);",
+                  "    console.log('subscriptionId salvo:', body.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"plan\": \"PREMIUM\",\n  \"paymentToken\": \"tok_test_success\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions"]
+            },
+            "description": "Cria uma assinatura com `tok_test_success` — cobrança sempre aprovada.\n\n**Planos disponíveis:** `BASICO` (R$ 19,90) | `PREMIUM` (R$ 39,90) | `FAMILIA` (R$ 59,90)\n\nO `subscriptionId` é salvo automaticamente na variável de coleção."
+          },
+          "response": [
+            {
+              "name": "201 - Assinatura criada",
+              "status": "Created",
+              "code": 201,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"id\": \"b2c3d4e5-f6a7-8901-bcde-f12345678901\",\n  \"status\": \"ACTIVE\",\n  \"plan\": \"PREMIUM\",\n  \"startDate\": \"2026-02-22T10:00:00\",\n  \"expiringDate\": \"2026-03-22T10:00:00\",\n  \"autoRenew\": true\n}"
+            }
+          ]
+        },
+        {
+          "name": "Criar Assinatura (tok_test_always_fail)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"plan\": \"BASICO\",\n  \"paymentToken\": \"tok_test_always_fail\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions"]
+            },
+            "description": "Cria uma assinatura que **sempre falha** no gateway.\n\nA cobrança inicial usa Resilience4j Retry — tenta 3x e retorna `422` se todas falharem.\n\nSe quiser observar a suspensão pelo scheduler, use `tok_test_success` na criação (para passar na cobrança inicial) e depois edite o token via SQL, ou use o seed que já cria assinaturas com `billingAttempts=2`."
+          },
+          "response": [
+            {
+              "name": "422 - Cobrança recusada",
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "header": [{ "key": "Content-Type", "value": "application/problem+json" }],
+              "body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Unprocessable Entity\",\n  \"status\": 422,\n  \"detail\": \"Cobrança recusada pelo gateway de pagamento\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Criar Assinatura (tok_test_fail_first_attempt)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('subscriptionId', body.id);",
+                  "    console.log('subscriptionId salvo:', body.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"plan\": \"FAMILIA\",\n  \"paymentToken\": \"tok_test_fail_first_attempt\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions"]
+            },
+            "description": "Cria com token que falha na 1ª tentativa mas aprova na 2ª (state machine WireMock).\n\nO Retry do Resilience4j reprocessa automaticamente — a assinatura é criada com status `ACTIVE`.\n\nNos ciclos seguintes do scheduler, esse token **sempre aprova** (o WireMock já avançou de estado)."
+          },
+          "response": []
+        },
+        {
+          "name": "Consultar Assinatura",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-User-Id", "value": "{{userId}}", "description": "UUID do usuário autenticado — injetado pelo BFF/Gateway em produção" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions/{{subscriptionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions", "{{subscriptionId}}"]
+            },
+            "description": "Retorna os dados da assinatura. Lê do Redis quando disponível; banco de dados como fallback.\n\nO header `X-User-Id` é obrigatório e validado contra o `userId` da assinatura."
+          },
+          "response": []
+        },
+        {
+          "name": "Cancelar Assinatura",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "X-User-Id", "value": "{{userId}}", "description": "UUID do usuário autenticado" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions/{{subscriptionId}}/cancel",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions", "{{subscriptionId}}", "cancel"]
+            },
+            "description": "Cancela a renovação automática.\n\n- `status` → `CANCELED`, `autoRenew` → `false`\n- O usuário **mantém acesso** até `expiringDate`\n- O scheduler move para `INACTIVE` quando o período vencer\n\nRetorna `204` sem corpo."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "description": "Endpoints de operação — acionam o scheduler e inspecionam o estado global. Não expostos em produção.",
+      "item": [
+        {
+          "name": "Disparar Sweep Manual",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/billing/trigger-sweep",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "billing", "trigger-sweep"]
+            },
+            "description": "Aciona o mesmo fluxo do scheduler imediatamente:\n1. Identifica assinaturas elegíveis para renovação\n2. Despacha eventos via Kafka (Outbox Pattern)\n3. Move assinaturas `CANCELED` vencidas para `INACTIVE`\n\nRetorna `202 Accepted` — o processamento é assíncrono via Kafka. Aguarde ~3s e consulte `GET /v1/admin/subscriptions` para ver os resultados."
+          },
+          "response": []
+        },
+        {
+          "name": "Listar Todas as Assinaturas",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "subscriptions"]
+            },
+            "description": "Lista todas as assinaturas ordenadas por status (`SUSPENDED` primeiro) e `billing_attempts DESC`.\n\nUse para inspecionar transições de estado após o seed + sweep. Não expõe `payment_token`."
+          },
+          "response": []
+        },
+        {
+          "name": "Forçar Suspensão",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/subscriptions/{{subscriptionId}}/force-suspend",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "subscriptions", "{{subscriptionId}}", "force-suspend"]
+            },
+            "description": "Suspende imediatamente uma assinatura `ACTIVE` usando o mesmo caminho atômico do scheduler.\n\n**Efeitos:** `status=SUSPENDED`, `autoRenew=false`, `nextRetryAt=null`, cache Redis atualizado.\n\nÚtil para demonstrar a suspensão sem aguardar 3 ciclos reais de falha."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Test Utils",
+      "description": "Utilitários de teste — disponíveis apenas no perfil `local`.",
+      "item": [
+        {
+          "name": "Seed (20 assinaturas — demo rápida)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/test/seed?count=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "test", "seed"],
+              "query": [
+                { "key": "count", "value": "20", "description": "Número de assinaturas. Use 20 para demos, 2000 para carga." }
+              ]
+            },
+            "description": "Limpa todas as tabelas e insere assinaturas nos 4 perfis de negócio:\n\n| % | Perfil | Token | billingAttempts | Resultado após sweep |\n|---|---|---|---|---|\n| 70% | Renovação normal | `tok_test_success` | 0 | `ACTIVE` renovada |\n| 10% | Retry (falhou 1x) | `tok_test_success` | 1 | `ACTIVE` renovada |\n| 10% | Beira do abismo | `tok_test_always_fail` | 2 | `SUSPENDED` |\n| 10% | Cancelados | `tok_test_success` | 0 | `INACTIVE` |\n\n**Fluxo completo:**\n1. `POST /api/test/seed?count=20`\n2. `POST /v1/admin/billing/trigger-sweep`\n3. Aguarde ~3s\n4. `GET /v1/admin/subscriptions`"
+          },
+          "response": []
+        },
+        {
+          "name": "Seed (2000 assinaturas — teste de carga)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/test/seed?count=2000",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "test", "seed"],
+              "query": [
+                { "key": "count", "value": "2000" }
+              ]
+            },
+            "description": "Seed com 2000 registros para observar a paginação do scheduler e o processamento paralelo de lotes Kafka."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "🧪 Cenário 1 — Criação e renovação bem-sucedida",
+      "description": "Execute os requests nesta pasta em sequência para observar o ciclo completo de uma assinatura saudável.",
+      "item": [
+        {
+          "name": "1. Criar Usuário",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('userId', pm.response.json().id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Cenário 1 User\",\n  \"email\": \"cenario1@example.com\",\n  \"document\": \"11122233344\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "2. Criar Assinatura PREMIUM",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('subscriptionId', pm.response.json().id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"plan\": \"PREMIUM\",\n  \"paymentToken\": \"tok_test_success\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. Consultar — deve estar ACTIVE",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-User-Id", "value": "{{userId}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions/{{subscriptionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions", "{{subscriptionId}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "🧪 Cenário 2 — Cancelamento com acesso até o fim do ciclo",
+      "description": "Cancela a assinatura e verifica que o status é CANCELED mas expiringDate está no futuro. O scheduler moverá para INACTIVE quando vencer.",
+      "item": [
+        {
+          "name": "1. Cancelar Assinatura",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "X-User-Id", "value": "{{userId}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions/{{subscriptionId}}/cancel",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions", "{{subscriptionId}}", "cancel"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "2. Consultar — deve estar CANCELED, autoRenew=false",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-User-Id", "value": "{{userId}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions/{{subscriptionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions", "{{subscriptionId}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "🧪 Cenário 3 — Seed + Sweep (todos os perfis de negócio)",
+      "description": "Demonstra todas as transições de estado de uma vez. Execute em sequência e aguarde ~3s entre o sweep e a consulta final.",
+      "item": [
+        {
+          "name": "1. Seed — 20 assinaturas",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/test/seed?count=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "test", "seed"],
+              "query": [{ "key": "count", "value": "20" }]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "2. Consultar estado inicial",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "subscriptions"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. Disparar Sweep",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/billing/trigger-sweep",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "billing", "trigger-sweep"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "4. Consultar estado final (aguarde ~3s)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "subscriptions"]
+            },
+            "description": "Resultado esperado:\n- ~14 assinaturas ACTIVE (billing_attempts=0, renovadas)\n- ~2 assinaturas SUSPENDED (beira do abismo → 3ª falha)\n- ~2 assinaturas INACTIVE (CANCELED vencidos)\n- ~2 assinaturas ACTIVE (retry — billing_attempts=1, renovadas na 2ª tentativa)"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "🧪 Cenário 4 — Força suspensão via Admin",
+      "description": "Demonstra a suspensão imediata via endpoint admin, sem aguardar 3 ciclos de falha.",
+      "item": [
+        {
+          "name": "1. Listar e pegar ID de uma assinatura ACTIVE",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "subscriptions"]
+            },
+            "description": "Copie o `id` de uma assinatura com `status=ACTIVE` e cole na variável `subscriptionId` da coleção, ou use o valor já salvo automaticamente."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Forçar Suspensão",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/subscriptions/{{subscriptionId}}/force-suspend",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "subscriptions", "{{subscriptionId}}", "force-suspend"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. Listar — verificar SUSPENDED",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "subscriptions"]
+            },
+            "description": "A assinatura suspensa deve aparecer no topo da lista com `status=SUSPENDED`, `auto_renew=false`, `next_retry_at=null`."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
+
