@@ -64,8 +64,12 @@ public class SubscriptionResultListener {
 	}
 
 	private void processSingleResult(BillingResultEvent event, List<SubscriptionUpdatedEvent> cacheEvents) {
-		Subscription sub = repository.findById(event.subscriptionId())
-			.orElseThrow(() -> new IllegalArgumentException("Assinatura não encontrada: " + event.subscriptionId()));
+		var maybeSubscription = repository.findById(event.subscriptionId());
+		if (maybeSubscription.isEmpty()) {
+			log.warn("⚠️ [SUBSCRIPTION] Ignorando resultado para sub inexistente {} (mensagem obsoleta do Kafka).", event.subscriptionId());
+			return;
+		}
+		Subscription sub = maybeSubscription.get();
 
 		if (!sub.getExpiringDate().isEqual(event.referenceExpiringDate())) {
 			log.warn("🔄 Ignorando evento obsoleto para sub {}", event.subscriptionId());
