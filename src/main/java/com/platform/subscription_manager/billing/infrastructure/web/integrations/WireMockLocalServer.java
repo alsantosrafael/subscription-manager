@@ -20,7 +20,7 @@ public class WireMockLocalServer {
 
     @PostConstruct
     public void start() {
-        wireMockServer = new WireMockServer(WireMockConfiguration.options().port(8081));
+        wireMockServer = new WireMockServer(WireMockConfiguration.options().port(8081).containerThreads(100));
         wireMockServer.start();
         WireMock.configureFor("localhost", 8081);
 

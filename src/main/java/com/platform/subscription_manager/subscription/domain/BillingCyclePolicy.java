@@ -2,7 +2,6 @@ package com.platform.subscription_manager.subscription.domain;
 
 import java.time.LocalDateTime;
 import java.time.YearMonth;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Domain Policy responsible for calculating the next billing cycle date.
@@ -40,7 +39,6 @@ public class BillingCyclePolicy {
 			base = base.withDayOfMonth(lastDay);
 		}
 
-		long jitterHours = ThreadLocalRandom.current().nextLong(0, 7); // [0, 6] hours
-		return base.plusHours(jitterHours);
+		return base;
 	}
 }

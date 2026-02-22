@@ -1,7 +1,8 @@
-package com.platform.subscription_manager.billing.domain.enums;
+package com.platform.subscription_manager.shared.domain;
 
 public enum BillingHistoryStatus {
 	SUCCESS,
 	FAILED,
 	PENDING
 }
+

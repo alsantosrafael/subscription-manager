@@ -1,4 +1,4 @@
-package com.platform.subscription_manager.subscription.domain.enums;
+package com.platform.subscription_manager.shared.domain;
 
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
@@ -13,3 +13,4 @@ public enum Plan {
 
 	private final BigDecimal price;
 }
+

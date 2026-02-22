@@ -1,8 +1,8 @@
 package com.platform.subscription_manager.subscription.domain;
 
 import com.platform.subscription_manager.subscription.domain.entity.Subscription;
-import com.platform.subscription_manager.subscription.domain.enums.Plan;
-import com.platform.subscription_manager.subscription.domain.enums.SubscriptionStatus;
+import com.platform.subscription_manager.shared.domain.Plan;
+import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -22,6 +22,7 @@ class SubscriptionTest {
 	private static final UUID USER_ID = UUID.randomUUID();
 	private static final String TOKEN  = "tok_test_abc123";
 	private static final int MAX_ATTEMPTS = 3;
+	private static final int BASE_DELAY_MINUTES = 60;
 
 	@Nested
 	@DisplayName("Subscription.create()")
@@ -110,7 +111,7 @@ class SubscriptionTest {
 		void firstFailureIncrementsCounterOnly() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.registerPaymentFailure(3);
+			sub.registerPaymentFailure(3, BASE_DELAY_MINUTES);
 
 			assertEquals(1, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
@@ -122,8 +123,8 @@ class SubscriptionTest {
 		void secondFailureStillActive() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
 
 			assertEquals(2, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.ACTIVE, sub.getStatus());
@@ -134,9 +135,9 @@ class SubscriptionTest {
 		void atThresholdSuspendsSubscription() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
 
 			assertEquals(3, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
@@ -148,7 +149,7 @@ class SubscriptionTest {
 		void customThresholdOfOne() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.registerPaymentFailure(1);
+			sub.registerPaymentFailure(1, BASE_DELAY_MINUTES);
 
 			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
 			assertFalse(sub.isAutoRenew());
@@ -159,10 +160,10 @@ class SubscriptionTest {
 		void beyondThresholdKeepsSuspended() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
 
 			assertEquals(3, sub.getBillingAttempts());
 			assertEquals(SubscriptionStatus.SUSPENDED, sub.getStatus());
@@ -173,7 +174,7 @@ class SubscriptionTest {
 		void setsLastBillingAttempt() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
 
-			sub.registerPaymentFailure(3);
+			sub.registerPaymentFailure(3, BASE_DELAY_MINUTES);
 
 			assertNotNull(sub.getLastBillingAttempt());
 		}
@@ -187,7 +188,7 @@ class SubscriptionTest {
 		@DisplayName("Sets status to ACTIVE and updates expiringDate")
 		void setsActiveAndUpdatesExpiringDate() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
 			var newExpiry = LocalDateTime.now().plusMonths(1);
 
 			sub.registerBillingSuccess(newExpiry);
@@ -200,8 +201,8 @@ class SubscriptionTest {
 		@DisplayName("Resets billingAttempts to 0")
 		void resetsBillingAttempts() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
 
 			sub.registerBillingSuccess(LocalDateTime.now().plusMonths(1));
 
@@ -212,7 +213,7 @@ class SubscriptionTest {
 		@DisplayName("Clears lastBillingAttempt")
 		void clearsLastBillingAttempt() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
 
 			sub.registerBillingSuccess(LocalDateTime.now().plusMonths(1));
 
@@ -243,8 +244,8 @@ class SubscriptionTest {
 		@DisplayName("billingFailedAttempts resets to 0")
 		void failedAttemptsResetOnRenewal() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerPaymentFailure(3);
-			sub.registerPaymentFailure(3);
+			sub.registerPaymentFailure(3, BASE_DELAY_MINUTES);
+			sub.registerPaymentFailure(3, BASE_DELAY_MINUTES);
 
 			sub.renew();
 
@@ -255,9 +256,9 @@ class SubscriptionTest {
 		@DisplayName("Status is ACTIVE after renewal")
 		void statusIsActiveAfterRenewal() {
 			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
-			sub.registerPaymentFailure(MAX_ATTEMPTS);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
+			sub.registerPaymentFailure(MAX_ATTEMPTS, BASE_DELAY_MINUTES);
 
 			sub.renew();
 

@@ -4,6 +4,7 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: postgres
+    command: postgres -c max_connections=300
     ports:
       - "5432:5432"
     environment:
@@ -39,6 +40,36 @@ services:
       KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
       KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      KAFKA_TRANSACTION_MAX_TIMEOUT_MS: 900000
+      KAFKA_CONNECTIONS_MAX_IDLE_MS: 300000
 
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+  redis:
+    image: redis:7.2-alpine
+    container_name: subscription-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 volumes:
   postgres_data:
+  redis_data:

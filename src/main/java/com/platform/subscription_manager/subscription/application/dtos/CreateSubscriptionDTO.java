@@ -1,6 +1,6 @@
 package com.platform.subscription_manager.subscription.application.dtos;
 
-import com.platform.subscription_manager.subscription.domain.enums.Plan;
+import com.platform.subscription_manager.shared.domain.Plan;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 

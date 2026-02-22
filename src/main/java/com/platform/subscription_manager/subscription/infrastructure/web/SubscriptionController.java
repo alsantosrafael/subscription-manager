@@ -29,8 +29,10 @@ public class SubscriptionController {
 	}
 
 	@GetMapping("/{subscriptionId}")
-	public ResponseEntity<SubscriptionResponseDTO> get(@PathVariable UUID subscriptionId) {
-		return subscriptionService.get(subscriptionId)
+	public ResponseEntity<SubscriptionResponseDTO> get(
+		@PathVariable UUID subscriptionId,
+		@RequestHeader("X-User-Id") UUID userId) {
+		return subscriptionService.get(subscriptionId, userId)
 			.map(ResponseEntity::ok)
 			.orElse(ResponseEntity.notFound().build());
 	}

@@ -9,9 +9,16 @@ CREATE TABLE subscriptions (
                                auto_renew BOOLEAN NOT NULL,
                                billing_attempts INT DEFAULT 0 NOT NULL,
                                version BIGINT DEFAULT 0,
+                               next_retry_at TIMESTAMP,
+                                last_billing_attempt TIMESTAMP,
+                               updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                               created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                                CONSTRAINT fk_subscription_user FOREIGN KEY (user_id) REFERENCES users(id)
+
 );
 
-CREATE INDEX idx_sub_renewal_sweep ON subscriptions (status, expiring_date);
+CREATE INDEX idx_sub_renewal_sweep
+    ON subscriptions (next_retry_at)
+    WHERE status = 'ACTIVE' AND auto_renew = true;
 
 CREATE INDEX idx_sub_api_read ON subscriptions (user_id) INCLUDE (status, plan, expiring_date);

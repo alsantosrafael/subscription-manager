@@ -11,9 +11,8 @@
 	import org.springframework.kafka.core.ConsumerFactory;
 	import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 	import org.springframework.kafka.core.DefaultKafkaProducerFactory;
-	import org.springframework.kafka.core.KafkaOperations;
 	import org.springframework.kafka.core.KafkaTemplate;
-	import org.springframework.kafka.core.ProducerFactory;
+	import org.springframework.kafka.listener.ContainerProperties;
 	import org.springframework.kafka.support.serializer.JacksonJsonDeserializer;
 	import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 
@@ -57,6 +56,8 @@
 		public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory() {
 			ConcurrentKafkaListenerContainerFactory<String, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
 			factory.setConsumerFactory(consumerFactory());
+			factory.setBatchListener(true);
+			factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
 			return factory;
 		}
 	}

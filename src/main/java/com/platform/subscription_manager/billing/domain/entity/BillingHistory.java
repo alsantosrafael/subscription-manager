@@ -1,7 +1,7 @@
 package com.platform.subscription_manager.billing.domain.entity;
 
 
-import com.platform.subscription_manager.billing.domain.enums.BillingHistoryStatus;
+import com.platform.subscription_manager.shared.domain.BillingHistoryStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;

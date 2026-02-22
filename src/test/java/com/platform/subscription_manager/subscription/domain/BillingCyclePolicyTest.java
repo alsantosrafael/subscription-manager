@@ -2,7 +2,6 @@ package com.platform.subscription_manager.subscription.domain;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -14,11 +13,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 @DisplayName("BillingCyclePolicy.calculateNextExpiration")
 class BillingCyclePolicyTest {
 
-
-	/** Strips the jitter so we can assert on the date / time-of-day portion. */
-	private LocalDateTime baseOf(LocalDateTime result, LocalDateTime input) {
-		return result.withHour(0).withMinute(0).withSecond(0).withNano(0);
-	}
 
 	@Nested
 	@DisplayName("Mid-month dates — simple +1 month")
@@ -220,42 +214,6 @@ class BillingCyclePolicyTest {
 		}
 	}
 
-	@Nested
-	@DisplayName("Jitter bounds")
-	class JitterBounds {
-
-		@RepeatedTest(50)
-		@DisplayName("Result is always within [base, base + 6 hours]")
-		void jitterIsWithinBounds() {
-			LocalDateTime input = LocalDateTime.of(2025, 6, 15, 10, 0);
-
-			// Compute the expected base (no jitter)
-			LocalDateTime expectedBase = input.plusMonths(1);
-
-			LocalDateTime result = BillingCyclePolicy.calculateNextExpiration(input);
-
-			assertFalse(result.isBefore(expectedBase),
-				"result must not be before base date");
-			assertFalse(result.isAfter(expectedBase.plusHours(6)),
-				"result must not be more than 6 hours after base date");
-		}
-
-		@RepeatedTest(50)
-		@DisplayName("Jitter on a last-day-of-month date stays within 6 hours of snapped base")
-		void jitterOnLastDayOfMonth() {
-			LocalDateTime input = LocalDateTime.of(2025, 3, 31, 10, 0); // → Apr 30 base
-
-			LocalDateTime expectedBase = LocalDateTime.of(2025, 4, 30,
-				input.getHour(), input.getMinute(), input.getSecond(), input.getNano());
-
-			LocalDateTime result = BillingCyclePolicy.calculateNextExpiration(input);
-
-			assertFalse(result.isBefore(expectedBase),
-				"result must not be before snapped base");
-			assertFalse(result.isAfter(expectedBase.plusHours(6)),
-				"result must not exceed base + 6 hours");
-		}
-	}
 
 	@Nested
 	@DisplayName("Time-of-day preservation")

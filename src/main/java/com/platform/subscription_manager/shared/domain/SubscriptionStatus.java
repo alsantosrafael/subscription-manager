@@ -1,4 +1,4 @@
-package com.platform.subscription_manager.subscription.domain.enums;
+package com.platform.subscription_manager.shared.domain;
 
 public enum SubscriptionStatus {
 	ACTIVE,
@@ -6,3 +6,4 @@ public enum SubscriptionStatus {
 	SUSPENDED,
 	EXPIRED
 }
+

@@ -1,9 +1,11 @@
 package com.platform.subscription_manager.subscription.domain.entity;
 
 import com.platform.subscription_manager.subscription.domain.BillingCyclePolicy;
-import com.platform.subscription_manager.subscription.domain.enums.Plan;
-import com.platform.subscription_manager.subscription.domain.enums.SubscriptionStatus;
+import com.platform.subscription_manager.shared.domain.Plan;
+import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
+import com.platform.subscription_manager.shared.config.PaymentTokenConverter;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -18,6 +20,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import java.util.Random;
 import java.util.UUID;
 
 @Entity
@@ -44,6 +47,7 @@ public class Subscription {
 	@Column(nullable = false, length = 20)
 	private SubscriptionStatus status;
 
+	@Convert(converter = PaymentTokenConverter.class)
 	@Column(name = "payment_token", nullable = false)
 	private String paymentToken;
 
@@ -58,6 +62,9 @@ public class Subscription {
 
 	@Column(name = "billing_attempts", nullable = false)
 	private int billingAttempts;
+
+	@Column(name = "next_retry_at")
+	private LocalDateTime nextRetryAt;
 
 	@Column(name = "last_billing_attempt")
 	private LocalDateTime lastBillingAttempt;
@@ -75,22 +82,31 @@ public class Subscription {
 		sub.expiringDate = BillingCyclePolicy.calculateNextExpiration(sub.startDate);
 		sub.autoRenew = true;
 		sub.billingAttempts = 0;
+		sub.nextRetryAt = sub.expiringDate;
 		return sub;
 	}
 
-	public void cancelRenewal() {
+	public void cancelRenewal() { // scheduler will cancel on the day it should be renewed
 		this.autoRenew = false;
 	}
 
-	public void registerPaymentFailure(int maxAttemptsAllowed) {
-		if(this.billingAttempts < maxAttemptsAllowed) {
-			this.billingAttempts++;
-			this.lastBillingAttempt = LocalDateTime.now();
+	public void registerPaymentFailure(int maxAttempts, int baseDelayMinutes) {
+		if (this.billingAttempts >= maxAttempts) {
+			return; // already at or beyond threshold — do not increment further
 		}
 
-		if (this.billingAttempts >= maxAttemptsAllowed) {
+		this.billingAttempts++;
+		this.lastBillingAttempt = LocalDateTime.now();
+
+		if (this.billingAttempts >= maxAttempts) {
 			this.status = SubscriptionStatus.SUSPENDED;
 			this.autoRenew = false;
+			this.nextRetryAt = null;
+		} else {
+			long delay = (long) Math.pow(2, this.billingAttempts) * baseDelayMinutes;
+			this.nextRetryAt = LocalDateTime.now()
+				.plusMinutes(delay)
+				.plusSeconds(new Random().nextInt(60)); // Jitter
 		}
 	}
 
@@ -100,8 +116,13 @@ public class Subscription {
 		this.status = SubscriptionStatus.ACTIVE;
 		this.autoRenew = true;
 	}
-	public void markBillingAttempt() {
+	public void markBillingAttempt(int baseDelayMinutes) {
+		// Only stamps timing — billingAttempts counter is owned by registerPaymentFailure
 		this.lastBillingAttempt = LocalDateTime.now();
+		long minutesToAdd = (long) Math.pow(2, this.billingAttempts) * baseDelayMinutes;
+		int jitter = new Random().nextInt(60);
+
+		this.nextRetryAt = LocalDateTime.now().plusMinutes(minutesToAdd).plusSeconds(jitter);
 	}
 
 	public void registerBillingSuccess(LocalDateTime newExpiringDate) {
@@ -109,5 +130,19 @@ public class Subscription {
 		this.expiringDate = newExpiringDate;
 		this.billingAttempts = 0;
 		this.lastBillingAttempt = null;
+		this.nextRetryAt = null;
+	}
+
+	/**
+	 * Mirrors exactly what renewSubscriptionAtomic writes to the DB.
+	 * Call this after a successful atomic update to keep the in-memory object
+	 * consistent without an extra SELECT.
+	 */
+	public void applyRenewal(LocalDateTime nextDate) {
+		this.expiringDate = nextDate;
+		this.status = SubscriptionStatus.ACTIVE;
+		this.billingAttempts = 0;
+		this.lastBillingAttempt = null;
+		this.nextRetryAt = nextDate;
 	}
 }

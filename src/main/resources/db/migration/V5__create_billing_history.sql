@@ -5,6 +5,8 @@ CREATE TABLE billing_history (
      status VARCHAR(50) NOT NULL,
      gateway_transaction_id VARCHAR(255),
      processed_at TIMESTAMP NOT NULL,
+     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
 
      CONSTRAINT uk_billing_idempotency UNIQUE (idempotency_key)
 );
