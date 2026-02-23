@@ -30,8 +30,7 @@ public class OpenApiConfig {
 					| Token | Comportamento |
 					|---|---|
 					| `tok_test_success` | Sempre aprovado ✅ |
-					| `tok_test_always_fail` | Sempre recusado → suspensão após 3 tentativas ❌ |
-					| `tok_test_fail_first_attempt` | Falha na 1ª tentativa, aprovado na 2ª (state machine WireMock) |
+					| `tok_test_always_fail` | Sempre recusado → suspensão após 3 tentativas do sweeper ❌ |
 
 					## Autenticação simulada
 					O header `X-User-Id` representa o UUID do usuário autenticado.

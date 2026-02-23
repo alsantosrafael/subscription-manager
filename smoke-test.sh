@@ -1,154 +1,172 @@
 #!/usr/bin/env bash
 # =============================================================================
-# smoke-test-billing.sh — E2E Smoke tests for the Asynchronous Billing Saga
+# smoke-test.sh — E2E smoke tests for the Subscription Manager
+#
+# Cenários cobertos:
+#   1. Criar usuário + assinatura (tok_test_success) → ACTIVE
+#   2. Cancelar assinatura → CANCELED, autoRenew=false
+#   3. Seed em massa + sweep → renovação, suspensão, inativação automática
+#   4. Verificação de negócio via /v1/admin/verify
+#   5. Idempotência — duplicata rejeitada com 409
+#
+# Uso:
+#   ./smoke-test.sh [base_url]
+#   ./smoke-test.sh http://localhost:8080
+#
+# Requer: curl, jq
 # =============================================================================
 
 BASE_URL="${1:-http://localhost:8080}"
 
-# ── Colour helpers ────────────────────────────────────────────────────────────
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-RESET='\033[0m'
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+PASS=0; FAIL=0
 
-PASS=0
-FAIL=0
-
-pass() { echo -e "${GREEN}  ✔  $1${RESET}"; ((PASS++)); }
-fail() { echo -e "${RED}  ✘  $1${RESET}"; ((FAIL++)); }
+pass()    { echo -e "${GREEN}  ✔  $1${RESET}"; ((PASS++)); }
+fail()    { echo -e "${RED}  ✘  $1${RESET}"; ((FAIL++)); }
 section() { echo -e "\n${CYAN}${BOLD}▶ $1${RESET}"; }
+info()    { echo -e "${YELLOW}  ℹ  $1${RESET}"; }
 
-# ── HTTP helpers ──────────────────────────────────────────────────────────────
-post() {
-  curl -s -w "\n%{http_code}" -X POST "${BASE_URL}$1" -H "Content-Type: application/json" -d "$2"
-}
-
-get() {
-  curl -s -w "\n%{http_code}" -X GET "${BASE_URL}$1"
-}
-
+post() { curl -s -w "\n%{http_code}" -X POST "${BASE_URL}$1" -H "Content-Type: application/json" -d "$2"; }
 body_of()   { echo "$1" | sed '$d'; }
-status_of() { echo "$1" | tail -n 1; }
+status_of() { echo "$1" | tail -n1; }
 
-# Helper to wait for async Kafka processing
-wait_for_async_state() {
-  local sub_id="$1"
-  local expected_attempts="$2"
-  local max_retries=10
-  local attempt=1
-
-  while [ $attempt -le $max_retries ]; do
-    RAW=$(get "/v1/subscriptions/${sub_id}")
-    BODY=$(body_of "$RAW")
-    ACTUAL_ATTEMPTS=$(echo "$BODY" | jq -r '.billingAttempts // 0')
-
-    if [[ "$ACTUAL_ATTEMPTS" == "$expected_attempts" ]]; then
-      return 0
-    fi
-    sleep 1
-    ((attempt++))
-  done
-  return 1
-}
-
-# =============================================================================
-echo -e "\n${BOLD}Billing Saga — Smoke Test Suite${RESET}"
+echo -e "\n${BOLD}Subscription Manager — Smoke Test Suite${RESET}"
 echo -e "Target: ${BASE_URL}\n"
 
 # =============================================================================
-section "1. Setup — Create User & Subscription (Expiring Today)"
+section "0. Health check"
 # =============================================================================
-
-# 1. Create User
-RAW=$(post "/v1/users" '{"name": "Billing Tester", "document": "777.888.999-00", "email": "billing@example.com"}')
-USER_ID=$(body_of "$RAW" | jq -r '.id // empty')
-
-# 2. Create Subscription (Assuming your API allows forcing the expiringDate for testing, or we mock it via a special token)
-# In a real test environment, we use a test token that WireMock is configured to handle
-RAW=$(post "/v1/subscriptions" "{
-  \"userId\": \"$USER_ID\",
-  \"plan\": \"PREMIUM\",
-  \"paymentToken\": \"tok_test_fail_first_attempt\"
-}")
-SUB_BODY=$(body_of "$RAW")
-SUB_ID=$(echo "$SUB_BODY" | jq -r '.id // empty')
-
-if [[ -n "$SUB_ID" ]]; then
-  pass "Test user and subscription created: $SUB_ID"
+RAW=$(curl -s -w "\n%{http_code}" "${BASE_URL}/actuator/health")
+STATUS=$(status_of "$RAW")
+if [[ "$STATUS" == "200" ]]; then
+  pass "App is UP"
 else
-  fail "Failed to setup test data. Aborting."
+  fail "App is not responding (HTTP $STATUS). Aborting."
   exit 1
 fi
 
 # =============================================================================
-section "2. Trigger Billing Sweep (Attempt 1 - Expected: Failure)"
+section "1. Create user + subscription → ACTIVE"
 # =============================================================================
-# Note: This requires a POST /v1/admin/billing/trigger-sweep endpoint calling your orchestrator
-RAW=$(post "/v1/admin/billing/trigger-sweep" "{}")
+TS=$(date +%s)
+RAW=$(post "/v1/users" "{\"name\":\"Smoke Tester\",\"document\":\"${TS:0:11}\",\"email\":\"smoke_${TS}@test.com\"}")
 STATUS=$(status_of "$RAW")
+USER_ID=$(body_of "$RAW" | jq -r '.id // empty')
 
-if [[ "$STATUS" == "200" || "$STATUS" == "202" ]]; then
-  pass "Billing Sweep triggered successfully."
+if [[ "$STATUS" == "201" && -n "$USER_ID" ]]; then
+  pass "User created (id=$USER_ID)"
 else
-  fail "Failed to trigger sweep (HTTP $STATUS). Did you create the admin endpoint?"
+  fail "User creation failed (HTTP $STATUS)"; exit 1
 fi
 
-# Polling for Kafka to finish processing and update the DB
-echo -e "${YELLOW}  ... waiting for async Kafka processing (Attempt 1) ...${RESET}"
-if wait_for_async_state "$SUB_ID" "1"; then
-  RAW=$(get "/v1/subscriptions/${SUB_ID}")
-  BODY=$(body_of "$RAW")
-  STATUS=$(echo "$BODY" | jq -r '.status')
+RAW=$(post "/v1/subscriptions" "{\"userId\":\"$USER_ID\",\"plan\":\"PREMIUM\",\"paymentToken\":\"tok_test_success\"}")
+STATUS=$(status_of "$RAW"); SUB_BODY=$(body_of "$RAW")
+SUB_ID=$(echo "$SUB_BODY" | jq -r '.id // empty')
+SUB_STATUS=$(echo "$SUB_BODY" | jq -r '.status // empty')
 
-  pass "Attempt 1 recorded in database."
-  if [[ "$STATUS" == "ACTIVE" ]]; then
-     pass "Subscription remains ACTIVE during grace period (1/3 failures)."
-  else
-     fail "Expected status ACTIVE during grace period, got $STATUS."
-  fi
+if [[ "$STATUS" == "201" && "$SUB_STATUS" == "ACTIVE" ]]; then
+  pass "Subscription created and ACTIVE (id=$SUB_ID)"
 else
-  fail "Kafka/Worker did not process Attempt 1 in time."
+  fail "Subscription creation failed (HTTP $STATUS, status=$SUB_STATUS)"; exit 1
 fi
 
 # =============================================================================
-section "3. Trigger Billing Sweep (Attempt 2 - Expected: Success)"
+section "2. GET subscription — cache warm-up"
 # =============================================================================
-# Mock requirement: Bypass the 1-hour threshold for testing (or have the trigger endpoint ignore thresholds)
+RAW=$(curl -s -w "\n%{http_code}" "${BASE_URL}/v1/subscriptions/${SUB_ID}" -H "X-User-Id: ${USER_ID}")
+STATUS=$(status_of "$RAW")
+CACHED_STATUS=$(body_of "$RAW" | jq -r '.status // empty')
 
-RAW=$(post "/v1/admin/billing/trigger-sweep" "{}")
-echo -e "${YELLOW}  ... waiting for async Kafka processing (Attempt 2) ...${RESET}"
-
-# On success, attempts should reset to 0!
-if wait_for_async_state "$SUB_ID" "0"; then
-  RAW=$(get "/v1/subscriptions/${SUB_ID}")
-  BODY=$(body_of "$RAW")
-  STATUS=$(echo "$BODY" | jq -r '.status')
-
-  pass "Attempt 2 processed and attempts reset to 0."
-  if [[ "$STATUS" == "ACTIVE" ]]; then
-     pass "Subscription successfully renewed! Status is ACTIVE."
-  else
-     fail "Expected status ACTIVE after renewal, got $STATUS."
-  fi
+if [[ "$STATUS" == "200" && "$CACHED_STATUS" == "ACTIVE" ]]; then
+  pass "GET subscription returned ACTIVE (Redis or DB)"
 else
-  fail "Kafka/Worker did not process Attempt 2 successfully."
+  fail "GET subscription failed (HTTP $STATUS, status=$CACHED_STATUS)"
 fi
 
 # =============================================================================
-section "4. Edge Case — 3rd Failure Suspension (Requires Mock Token)"
+section "3. Cancel subscription → CANCELED, autoRenew=false"
 # =============================================================================
-# Concept: Create a sub with token 'tok_test_always_fail', run sweep 3 times, assert status = SUSPENDED.
-echo -e "${CYAN}▶ Edge case testing logic follows the same polling pattern (omitted for brevity).${RESET}"
-pass "Edge case placeholder."
+RAW=$(curl -s -w "\n%{http_code}" -X PATCH "${BASE_URL}/v1/subscriptions/${SUB_ID}/cancel" \
+  -H "X-User-Id: ${USER_ID}")
+STATUS=$(status_of "$RAW")
+[[ "$STATUS" == "204" ]] && pass "Cancel returned 204" || fail "Cancel failed (HTTP $STATUS)"
+
+RAW=$(curl -s -w "\n%{http_code}" "${BASE_URL}/v1/subscriptions/${SUB_ID}" -H "X-User-Id: ${USER_ID}")
+BODY=$(body_of "$RAW")
+CANCEL_STATUS=$(echo "$BODY" | jq -r '.status // empty')
+AUTO_RENEW=$(echo "$BODY"   | jq -r '.autoRenew // empty')
+
+if [[ "$CANCEL_STATUS" == "CANCELED" && "$AUTO_RENEW" == "false" ]]; then
+  pass "Subscription is CANCELED with autoRenew=false"
+else
+  fail "Expected CANCELED/autoRenew=false, got status=$CANCEL_STATUS autoRenew=$AUTO_RENEW"
+fi
 
 # =============================================================================
-# Summary
+section "4. Seed + sweep → renovação, suspensão, inativação"
 # =============================================================================
-TOTAL=$((PASS + FAIL))
+info "Seeding 20 subscriptions (3 profiles: success 80%, always_fail 10%, canceled 10%)..."
+RAW=$(post "/api/test/seed?count=20" "")
+STATUS=$(status_of "$RAW"); TOTAL=$(body_of "$RAW" | jq -r '.totalSeeded // empty')
+
+if [[ "$STATUS" == "200" && "$TOTAL" == "20" ]]; then
+  pass "Seed OK — $TOTAL subscriptions inserted"
+else
+  fail "Seed failed (HTTP $STATUS, totalSeeded=$TOTAL)"; exit 1
+fi
+
+info "Triggering sweep..."
+RAW=$(post "/v1/admin/billing/trigger-sweep" "")
+STATUS=$(status_of "$RAW")
+[[ "$STATUS" == "200" || "$STATUS" == "202" ]] \
+  && pass "Sweep triggered (HTTP $STATUS)" \
+  || fail "Sweep trigger failed (HTTP $STATUS)"
+
+info "Waiting 10s for Kafka to process results..."
+sleep 10
+
+# =============================================================================
+section "5. Business verification — /v1/admin/verify"
+# =============================================================================
+RAW=$(curl -s -w "\n%{http_code}" "${BASE_URL}/v1/admin/verify")
+STATUS=$(status_of "$RAW"); BODY=$(body_of "$RAW")
+PASSED=$(echo "$BODY" | jq -r '.passed // false')
+
+if [[ "$STATUS" == "200" && "$PASSED" == "true" ]]; then
+  pass "Business verification PASSED"
+  echo "$BODY" | jq '{
+    seededSubscriptions,
+    checks: {
+      active:         {actual: .checks.active.actual,         expected: .checks.active.expected_approx,         passed: .checks.active.passed},
+      suspended:      {actual: .checks.suspended.actual,      expected: .checks.suspended.expected_approx,      passed: .checks.suspended.passed},
+      becameInactive: {actual: .checks.becameInactive.actual, expected: .checks.becameInactive.expected_approx, passed: .checks.becameInactive.passed},
+      outboxClean:    {pending: .checks.outboxClean.pending,  passed: .checks.outboxClean.passed}
+    }
+  }' 2>/dev/null || echo "$BODY"
+else
+  fail "Business verification FAILED (HTTP $STATUS, passed=$PASSED)"
+  echo "$BODY" | jq '{passed, hint}' 2>/dev/null || echo "$BODY"
+fi
+
+# =============================================================================
+section "6. Idempotency — duplicate active subscription rejected with 409"
+# =============================================================================
+TS2=$(date +%s)$RANDOM
+RAW=$(post "/v1/users" "{\"name\":\"Idempotency Tester\",\"document\":\"${TS2:0:11}\",\"email\":\"idem_${TS2}@test.com\"}")
+IDEM_USER=$(body_of "$RAW" | jq -r '.id // empty')
+post "/v1/subscriptions" "{\"userId\":\"$IDEM_USER\",\"plan\":\"BASICO\",\"paymentToken\":\"tok_test_success\"}" > /dev/null
+
+RAW=$(post "/v1/subscriptions" "{\"userId\":\"$IDEM_USER\",\"plan\":\"BASICO\",\"paymentToken\":\"tok_test_success\"}")
+STATUS=$(status_of "$RAW")
+[[ "$STATUS" == "409" ]] \
+  && pass "Duplicate active subscription correctly rejected with 409" \
+  || fail "Expected 409 for duplicate subscription, got $STATUS"
+
+# =============================================================================
 echo -e "\n${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo -e "${BOLD}Results: ${GREEN}${PASS} passed${RESET}, ${RED}${FAIL} failed${RESET} / ${TOTAL} total"
+echo -e "${BOLD}Results: ${GREEN}${PASS} passed${RESET}, ${RED}${FAIL} failed${RESET} / $((PASS + FAIL)) total${RESET}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
 
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
+

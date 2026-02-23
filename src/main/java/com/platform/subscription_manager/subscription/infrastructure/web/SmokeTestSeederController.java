@@ -1,6 +1,5 @@
 package com.platform.subscription_manager.subscription.infrastructure.web;
 
-import com.github.tomakehurst.wiremock.client.WireMock;
 import com.platform.subscription_manager.shared.config.PaymentTokenConverter;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -10,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -19,7 +19,9 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -50,20 +52,14 @@ public class SmokeTestSeederController {
 		summary = "Popular banco com dados de teste",
 		description = """
 			Limpa todas as tabelas (assinaturas, usuários, histórico, outbox, ShedLock) e insere
-			`count` assinaturas distribuídas entre os 4 perfis de negócio:
+			`count` assinaturas distribuídas entre os 3 perfis de negócio:
 
 			| % | Perfil | Token | billingAttempts | Resultado esperado após sweep |
 			|---|---|---|---|---|
 			| 70% | Renovação normal | `tok_test_success` | 0 | `ACTIVE` renovada |
-			| 10% | Retry — falhou 1x | `tok_test_success` | 1 | `ACTIVE` renovada na 2ª tentativa |
-			| 10% | Beira do abismo | `tok_test_always_fail` | 2 | `SUSPENDED` (3ª falha dispara suspensão) |
-			| 10% | Cancelados vencidos | `tok_test_success` | 0 | `INACTIVE` (expiringDate = hoje) |
-
-			**Notas:**
-			- Os tokens são armazenados criptografados (AES-256-GCM) — o seeder usa o `PaymentTokenConverter`
-			- O `nextRetryAt` é calculado espelhando exatamente a fórmula de backoff do `SubscriptionResultListener`
-			- O registro ShedLock é resetado para que o sweep possa ser acionado imediatamente
-			- O WireMock é reconfigurado via API para garantir cenários limpos
+			| 10% | Retry — falhou 1x | `tok_test_success` | 1 | `ACTIVE` renovada |
+			| 10% | Beira do abismo | `tok_test_always_fail` | 2 | `SUSPENDED` (3ª falha) |
+			| 10% | Cancelados vencidos | `tok_test_success` | 0 | `INACTIVE` |
 
 			**Fluxo recomendado:**
 			```
@@ -73,11 +69,11 @@ public class SmokeTestSeederController {
 			```
 			""",
 		responses = {
-			@ApiResponse(responseCode = "200", description = "Seed concluído — corpo contém o total de registros inseridos")
+			@ApiResponse(responseCode = "200", description = "Seed concluído")
 		}
 	)
 	@PostMapping("/seed")
-	public String seedDatabase(
+	public ResponseEntity<Map<String, Object>> seedDatabase(
 		@Parameter(description = "Número de assinaturas a criar. Recomendado: 20 para demos, 2000 para testes de carga.")
 		@RequestParam(defaultValue = "2000") int count) {
 		log.info("🧹 Limpando tabelas...");
@@ -94,14 +90,6 @@ public class SmokeTestSeederController {
 			      locked_by  = 'seed-reset'
 			""");
 
-		// Reset WireMock scenario state so tok_test_fail_first_attempt always starts
-		// from STARTED — a previous run may have left it in SECOND_ATTEMPT.
-		try {
-			WireMock.resetAllScenarios();
-			log.info("🔄 WireMock scenarios resetados.");
-		} catch (Exception e) {
-			log.warn("⚠️ Não foi possível resetar os cenários do WireMock: {}", e.getMessage());
-		}
 
 		log.warn("⚠️  Aguarde ~5s após o seed antes de acionar o scheduler — " +
 			"mensagens Kafka in-flight do ciclo anterior ainda podem estar a caminho do consumer.");
@@ -113,6 +101,11 @@ public class SmokeTestSeederController {
 		List<Object[]> subsBatch = new ArrayList<>();
 
 		log.info("🌱 Gerando dados para {} assinaturas...", count);
+
+		int happyPath = (int) (count * 0.7);
+		int retryOnce = (int) (count * 0.8) - happyPath;
+		int nearSuspension = (int) (count * 0.9) - (int) (count * 0.8);
+		int canceled = count - (int) (count * 0.9);
 
 		for (int i = 0; i < count; i++) {
 			UUID userId = UUID.randomUUID();
@@ -150,7 +143,33 @@ public class SmokeTestSeederController {
         """, subsBatch);
 
 		log.info("✅ Smoke Test concluído com {} registros.", count);
-		return "Seeded " + count + " subscriptions successfully!";
+
+		// Build a rich response so the caller knows exactly what was seeded and what to expect
+		Map<String, Object> seeded = new LinkedHashMap<>();
+		seeded.put("happyPath_renewsSuccessfully", happyPath);
+		seeded.put("retry1x_renewsOn2ndAttempt", retryOnce);
+		seeded.put("nearSuspension_3rdFailSuspends", nearSuspension);
+		seeded.put("canceled_becomesInactive", canceled);
+
+		Map<String, Object> expectedAfterSweep = new LinkedHashMap<>();
+		expectedAfterSweep.put("ACTIVE_renewed_billingAttempts_0", happyPath + retryOnce);
+		expectedAfterSweep.put("SUSPENDED_autoRenew_false", nearSuspension);
+		expectedAfterSweep.put("INACTIVE_from_canceled", canceled);
+		expectedAfterSweep.put("note", "Aguarde ~3-5s após o sweep para o Kafka processar. Verifique em GET /v1/admin/status");
+
+		Map<String, Object> nextSteps = new LinkedHashMap<>();
+		nextSteps.put("step1_triggerSweep", "POST /v1/admin/billing/trigger-sweep");
+		nextSteps.put("step2_wait", "Aguarde ~3-5 segundos para processamento Kafka");
+		nextSteps.put("step3_checkStatus", "GET /v1/admin/status  ← snapshot com contagens por status");
+		nextSteps.put("step4_listAll", "GET /v1/admin/subscriptions  ← lista todas com campos operacionais");
+
+		Map<String, Object> response = new LinkedHashMap<>();
+		response.put("totalSeeded", count);
+		response.put("seededBreakdown", seeded);
+		response.put("expectedAfterSweep", expectedAfterSweep);
+		response.put("nextSteps", nextSteps);
+
+		return ResponseEntity.ok(response);
 	}
 
 	private Object[] createSubRow(UUID userId, String plan, String status, String token,

@@ -35,7 +35,7 @@ public class Subscription {
 	@GeneratedValue(strategy = GenerationType.UUID)
 	private UUID id;
 
-	@Column(name = "user_id", nullable = false)
+	@Column(name = "user_id", nullable = false, unique = true)
 	private UUID userId;
 
 	@Enumerated(EnumType.STRING)

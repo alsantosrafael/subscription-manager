@@ -2,6 +2,7 @@ package com.platform.subscription_manager.subscription.application.services;
 
 import com.platform.subscription_manager.billing.BillingFacade;
 import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
+import com.platform.subscription_manager.shared.domain.exceptions.ConflictException;
 import com.platform.subscription_manager.shared.domain.exceptions.ResourceNotFoundException;
 import com.platform.subscription_manager.shared.domain.exceptions.UnprocessableEntityException;
 import com.platform.subscription_manager.shared.infrastructure.messaging.SubscriptionUpdatedEvent;
@@ -91,7 +92,7 @@ public class SubscriptionWriteService {
 			Subscription sub = existing.get();
 
 			if (sub.getStatus() == SubscriptionStatus.ACTIVE) {
-				throw new UnprocessableEntityException("User already has an active subscription");
+				throw new ConflictException("User already has an active subscription");
 			}
 
 			SubscriptionStatus previous = sub.getStatus();

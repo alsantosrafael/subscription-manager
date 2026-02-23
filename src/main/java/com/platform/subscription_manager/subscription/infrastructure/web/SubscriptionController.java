@@ -43,8 +43,7 @@ public class SubscriptionController {
 
 			**Tokens de teste disponíveis (WireMock, perfil `local`):**
 			- `tok_test_success` — sempre aprovado
-			- `tok_test_always_fail` — sempre recusado → sub suspensa após 3 sweeps
-			- `tok_test_fail_first_attempt` — falha na 1ª tentativa, aprovado na 2ª (state machine)
+			- `tok_test_always_fail` — sempre recusado (use via sweep/seed, não no caminho HTTP direto)
 			""",
 		responses = {
 			@ApiResponse(responseCode = "201", description = "Assinatura criada/reativada e cobrança aprovada",

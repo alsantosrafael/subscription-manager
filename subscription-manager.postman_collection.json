@@ -163,22 +163,7 @@
           ]
         },
         {
-          "name": "Criar Assinatura (tok_test_fail_first_attempt)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "if (pm.response.code === 201) {",
-                  "    const body = pm.response.json();",
-                  "    pm.collectionVariables.set('subscriptionId', body.id);",
-                  "    console.log('subscriptionId salvo:', body.id);",
-                  "}"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
+          "name": "Criar Assinatura (tok_test_always_fail → 422)",
           "request": {
             "method": "POST",
             "header": [
@@ -186,7 +171,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"plan\": \"FAMILIA\",\n  \"paymentToken\": \"tok_test_fail_first_attempt\"\n}",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"plan\": \"FAMILIA\",\n  \"paymentToken\": \"tok_test_always_fail\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
@@ -194,9 +179,17 @@
               "host": ["{{baseUrl}}"],
               "path": ["v1", "subscriptions"]
             },
-            "description": "Cria com token que falha na 1ª tentativa mas aprova na 2ª (state machine WireMock).\n\nO Retry do Resilience4j reprocessa automaticamente — a assinatura é criada com status `ACTIVE`.\n\nNos ciclos seguintes do scheduler, esse token **sempre aprova** (o WireMock já avançou de estado)."
+            "description": "Demonstra recusa imediata do gateway.\n\n`tok_test_always_fail` faz o gateway retornar `status=failed` → a assinatura é revertida e a API devolve 422.\n\nPara ver suspensão após 3 tentativas do sweeper, use `POST /api/test/seed` com este token em billingAttempts=2."
           },
-          "response": []
+          "response": [
+            {
+              "name": "422 - Cobrança recusada",
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "header": [{ "key": "Content-Type", "value": "application/problem+json" }],
+              "body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Unprocessable Entity\",\n  \"status\": 422,\n  \"detail\": \"Payment declined: Cartão bloqueado.\"\n}"
+            }
+          ]
         },
         {
           "name": "Consultar Assinatura",

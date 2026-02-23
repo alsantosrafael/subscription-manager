@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -14,6 +15,7 @@ public interface BillingHistoryRepository extends JpaRepository<BillingHistory, 
 	boolean existsByIdempotencyKey(@Param("idempotencyKey") String idempotencyKey);
 	Optional<BillingHistory> findByIdempotencyKey(@Param("idempotencyKey") String idempotencyKey);
 
+	@Transactional
 	@Modifying(clearAutomatically = true)
 	@Query(value = """
         INSERT INTO billing_history (id, subscription_id, idempotency_key, status, processed_at)
@@ -22,6 +24,7 @@ public interface BillingHistoryRepository extends JpaRepository<BillingHistory, 
     """, nativeQuery = true)
 	int insertIfNotExist(@Param("subId") UUID subId, @Param("key") String key);
 
+	@Transactional
 	@Modifying(clearAutomatically = true)
 	@Query("""
         UPDATE BillingHistory b

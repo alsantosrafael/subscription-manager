@@ -58,41 +58,92 @@ docker compose down -v --remove-orphans
 
 ### Modo 3 — Stress test com o endpoint de seed
 
-Com a stack rodando (Modo 1 ou Modo 2), use o script `stress-seed.sh` para popular o banco e acionar o scheduler em loop automaticamente.
+Com a stack rodando (Modo 1 ou Modo 2), use o script `stress-seed.sh` para exercitar o sistema em **duas frentes simultâneas** por ciclo.
 
 #### Uso do script
 
 ```bash
 # Sintaxe
-./stress-seed.sh [count] [cycles]
+./stress-seed.sh [count] [cycles] [http_users]
 
-#   count   — assinaturas por chamada de seed  (padrão: 20)
-#   cycles  — número de ciclos seed → sweep    (padrão: 5)
+#   count       — assinaturas por chamada de seed         (padrão: 20)
+#   cycles      — número de ciclos                         (padrão: 5)
+#   http_users  — jornadas HTTP reais concorrentes/ciclo   (padrão: 5)
 ```
 
 #### Exemplos
 
 ```bash
-# Padrão: 5 ciclos × 20 assinaturas = 100 total
+# Padrão: 5 ciclos × 20 subs (seed) + 5 jornadas HTTP/ciclo
 ./stress-seed.sh
 
-# Carga média: 10 ciclos × 50 assinaturas = 500 total
-./stress-seed.sh 50 10
+# Carga média
+./stress-seed.sh 50 10 10
 
-# Carga alta: 20 ciclos × 100 assinaturas = 2000 total
-./stress-seed.sh 100 20
+# Carga alta
+./stress-seed.sh 100 20 20
 ```
 
 #### O que o script faz em cada ciclo
 
-1. **Seed** — `POST /api/test/seed?count=N` — insere N assinaturas distribuídas entre todos os cenários de negócio (ACTIVE renovando, CANCELED expirando, SUSPENDED, beira do abismo)
-2. **Pausa 2s** — dá tempo para o Kafka processar resultados do ciclo anterior
-3. **Sweep** — `POST /v1/admin/billing/trigger-sweep` — dispara o scheduler imediatamente sem esperar o cron de 1 minuto
-4. **Pausa 5s** — aguarda o BillingWorker processar as cobranças via Kafka
-5. **Snapshot** — mostra a contagem de assinaturas por status
+**Fase 1 — Scheduler load (async)**
+1. **Seed** — `POST /api/test/seed?count=N` — insere N assinaturas distribuídas entre todos os cenários (ACTIVE, CANCELED expirando, SUSPENDED, beira do abismo)
+2. **Sweep** — `POST /v1/admin/billing/trigger-sweep` — dispara o scheduler imediatamente
+
+**Fase 2 — Jornadas HTTP reais (síncrono, em paralelo)**
+
+Simula fluxo real de cadastro, em `http_users` goroutines bash simultâneas por ciclo:
+1. `POST /v1/users` — cria usuário único
+2. `POST /v1/subscriptions` — cria assinatura com `tok_test_success`
+3. `GET /v1/subscriptions/{id}` — lê assinatura (aquece cache Redis)
+4. `PATCH .../cancel` — cancela a assinatura em ~30% dos casos
+
+Exercita transações, idempotência, cache Redis e circuit breaker no caminho síncrono — **independente do scheduler**.
+
+Ao final de cada ciclo: **Snapshot** — contagem de assinaturas por status.
 
 #### Comandos avulsos (sem o script)
+```
+# Workflow completo usando endpoints
+TS=$(date +%s)
 
+echo "=== STEP 1: Create User ===" && \
+USER_BODY=$(curl -s -X POST http://localhost:8080/v1/users \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"Rafael Demo\",\"document\":\"${TS:0:11}\",\"email\":\"demo_${TS}@test.com\"}") && \
+echo "$USER_BODY" && \
+USER_ID=$(echo "$USER_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+
+echo "" && echo "=== STEP 2: Create Subscription ===" && \
+SUB_BODY=$(curl -s -X POST http://localhost:8080/v1/subscriptions \
+  -H "Content-Type: application/json" \
+  -d "{\"userId\":\"$USER_ID\",\"plan\":\"PREMIUM\",\"paymentToken\":\"tok_test_success\"}") && \
+echo "$SUB_BODY" && \
+SUB_ID=$(echo "$SUB_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+
+echo "" && echo "=== STEP 3: GET Subscription ===" && \
+curl -s "http://localhost:8080/v1/subscriptions/$SUB_ID" -H "X-User-Id: $USER_ID" && \
+
+echo "" && echo "=== STEP 4: Cancel ===" && \
+curl -s -w "\nHTTP:%{http_code}" -X PATCH \
+  "http://localhost:8080/v1/subscriptions/$SUB_ID/cancel" \
+  -H "X-User-Id: $USER_ID" && \
+
+echo "" && echo "=== STEP 5: GET after cancel ===" && \
+curl -s "http://localhost:8080/v1/subscriptions/$SUB_ID" -H "X-User-Id: $USER_ID" && \
+
+echo "" && echo "=== STEP 6: Reactivate CANCELED->ACTIVE (plan PREMIUM->BASICO) ===" && \
+curl -s -X POST http://localhost:8080/v1/subscriptions \
+  -H "Content-Type: application/json" \
+  -d "{\"userId\":\"$USER_ID\",\"plan\":\"BASICO\",\"paymentToken\":\"tok_test_success\"}" && \
+
+echo "" && echo "=== STEP 7: 409 — duplicate while ACTIVE ===" && \
+curl -s -X POST http://localhost:8080/v1/subscriptions \
+  -H "Content-Type: application/json" \
+  -d "{\"userId\":\"$USER_ID\",\"plan\":\"FAMILIA\",\"paymentToken\":\"tok_test_success\"}" && \
+
+echo "" && echo "=== DONE ==="
+```
 ```bash
 # Seed pontual
 curl -s -X POST "http://localhost:8080/api/test/seed?count=20" | jq
@@ -104,6 +155,66 @@ curl -s -X POST http://localhost:8080/v1/admin/billing/trigger-sweep
 curl -s http://localhost:8080/v1/admin/subscriptions | \
   jq '[.[] | {id, status, billing_attempts, next_retry_at}]'
 ```
+
+---
+
+### ✅ Como confirmar que o seed + sweep funcionaram corretamente
+
+Após rodar o seed e o sweep (ou o `stress-seed.sh`), use o endpoint de verificação automática:
+
+```bash
+# Aguarde ~5s para o Kafka processar os resultados e execute:
+curl -s http://localhost:8080/v1/admin/verify | jq .
+```
+
+O endpoint compara o estado atual do banco com os resultados esperados para cada cenário do seed e retorna um relatório objetivo:
+
+```json
+{
+  "passed": true,
+  "totalSubscriptions": 20,
+  "checks": {
+    "renewedSuccessfully": {
+      "actual": 16,
+      "expected_approx": 16,
+      "passed": true,
+      "note": "ACTIVE + billingAttempts=0 + expiringDate > hoje (~80% do total)"
+    },
+    "suspended": {
+      "actual": 2,
+      "expected_approx": 2,
+      "passed": true,
+      "note": "SUSPENDED + autoRenew=false (~10% do total)"
+    },
+    "becameInactive": {
+      "actual": 2,
+      "expected_approx": 2,
+      "passed": true,
+      "note": "INACTIVE — eram CANCELED com expiringDate ≤ hoje (~10% do total)"
+    },
+    "outboxClean": {
+      "pending": 0,
+      "passed": true,
+      "note": "Outbox limpo — todos os eventos processados."
+    }
+  },
+  "checkedAt": "2026-02-22T19:11:05"
+}
+```
+
+**Interpretação do resultado:**
+
+| Campo | Significado |
+|---|---|
+| `passed: true` | Todos os cenários bateram com tolerância de 5% |
+| `renewedSuccessfully` | Assinaturas renovadas com sucesso (~80% do seed) |
+| `suspended` | Assinaturas suspensas após 3 falhas de cobrança (~10%) |
+| `becameInactive` | Assinaturas canceladas que expiraram e viraram INACTIVE (~10%) |
+| `outboxClean` | Nenhum evento pendente no outbox — Kafka processou tudo |
+
+Se `passed: false`, o campo `hint` indica o próximo passo (ex: sweep ainda não rodou, aguarde o backoff das retries).
+
+> **Dica:** Se `outboxClean.pending > 0`, aguarde mais 5–10 segundos e chame o endpoint novamente — o Kafka pode ainda estar processando as últimas mensagens.
 
 ---
 
@@ -123,7 +234,9 @@ O teste dura 60s (15s rampa ↑ + 30s fogo cerrado + 15s rampa ↓) e mede:
 - `http_req_duration` por endpoint (tag `name`)
 - `kafka_e2e_processing_time` — latência end-to-end desde a criação até o Kafka resolver a cobrança
 - `business_cancelations` — contador de cancelamentos bem-sucedidos
-- Threshold: `p(95) < 200ms` no `GET /v1/subscriptions/{id}` (o WireMock tem 800ms de delay fixo — o p95 do GET é dominado pelo cache Redis, não pelo gateway)
+- Threshold: `p(95) < 200ms` no `GET /v1/subscriptions/{id}` (dominado pelo cache Redis)
+
+> Usa apenas `tok_test_success` — para não abrir o circuit breaker durante o teste de carga.
 
 ---
 
@@ -160,9 +273,9 @@ O teste dura 60s (15s rampa ↑ + 30s fogo cerrado + 15s rampa ↓) e mede:
 | Token | Comportamento |
 |---|---|
 | `tok_test_success` | Cobrança sempre aprovada ✅ |
-| `tok_test_always_fail` | Cobrança sempre recusada — sub suspensa após 3 tentativas ❌ |
-| `tok_test_fail` | Recusada (usado pelo seed no grupo "beira do abismo") |
-| `tok_test_fail_first_attempt` | Falha na 1ª tentativa, aprovada na 2ª (máquina de estado WireMock) |
+| `tok_test_always_fail` | Cobrança sempre recusada — sub suspensa após 3 tentativas do sweeper ❌ |
+
+> `tok_test_always_fail` é exercitado exclusivamente pelo **sweeper** (via seed com `billingAttempts=2`), nunca nas jornadas HTTP — para não abrir o circuit breaker no caminho síncrono.
 
 ---
 
@@ -213,9 +326,9 @@ curl -s http://localhost:8080/v1/subscriptions/$SUB_ID \
 ### 🧪 Cenário 3 — Seed em massa + sweep manual (todos os cenários de negócio)
 
 ```bash
-# 1. Gera 20 assinaturas representando os 4 perfis de negócio:
-#    70% renovação normal | 10% retry (falhou 1x) | 10% beira do abismo (falhou 2x) | 10% cancelados
-curl -s -X POST "http://localhost:8080/api/test/seed?count=20"
+# 1. Gera 20 assinaturas representando os 3 perfis de negócio:
+#    80% renovação (tok_test_success) | 10% beira do abismo (tok_test_always_fail, billingAttempts=2) | 10% cancelados
+curl -s -X POST "http://localhost:8080/api/test/seed?count=20" | jq .
 
 # 2. Consulta estado inicial (antes do sweep)
 curl -s http://localhost:8080/v1/admin/subscriptions | jq '[.[] | {id, status, plan, billing_attempts, next_retry_at}]'
@@ -223,73 +336,77 @@ curl -s http://localhost:8080/v1/admin/subscriptions | jq '[.[] | {id, status, p
 # 3. Dispara o sweep manualmente (não precisa esperar o scheduler de 1 min)
 curl -s -X POST http://localhost:8080/v1/admin/billing/trigger-sweep -w "HTTP %{http_code}\n"
 
-# 4. Aguarda ~3s e consulta novamente — observe as transições:
+# 4. Aguarda ~5s e consulta novamente — observe as transições:
 #    ACTIVE(billingAttempts=0) → renovadas
 #    ACTIVE(billingAttempts=2, tok_test_always_fail) → SUSPENDED
 #    CANCELED → INACTIVE
-sleep 3
+sleep 5
 curl -s http://localhost:8080/v1/admin/subscriptions | jq '[.[] | {id, status, billing_attempts}]'
+
+# 5. Verificação automática
+curl -s http://localhost:8080/v1/admin/verify | jq .
 ```
 
 **Resultado esperado após o sweep:**
 - 16 assinaturas `ACTIVE` com `billing_attempts=0` (renovadas)
-- 2 assinaturas `SUSPENDED` (atingiram 3 falhas)
-- 2 assinaturas `INACTIVE` (eram CANCELED e venceram)
+- 2 assinaturas `SUSPENDED` (atingiram 3 falhas com `tok_test_always_fail`)
+- 2 assinaturas `INACTIVE` (eram `CANCELED` e venceram)
 
 ---
 
-### 🧪 Cenário 4 — Retentativa com backoff exponencial
+### 🧪 Cenário 4 — Suspensão automática após 3 falhas (via seed)
+
+O seed já insere assinaturas com `billingAttempts=2` e `tok_test_always_fail`. O sweep faz a 3ª tentativa → suspensão automática.
 
 ```bash
-# Criar uma assinatura que falha na 1ª tentativa mas sucede na 2ª
-USER2=$(curl -s -X POST http://localhost:8080/v1/users \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Maria Retry","email":"maria@email.com","document":"98765432100"}')
-USER2_ID=$(echo $USER2 | jq -r '.id')
+# 1. Seed com perfil "beira do abismo" incluído (~10% das subs)
+curl -s -X POST "http://localhost:8080/api/test/seed?count=20" | jq .
 
-SUB2=$(curl -s -X POST http://localhost:8080/v1/subscriptions \
-  -H "Content-Type: application/json" \
-  -d "{\"userId\":\"$USER2_ID\",\"plan\":\"BASICO\",\"paymentToken\":\"tok_test_fail_first_attempt\"}")
-SUB2_ID=$(echo $SUB2 | jq -r '.id')
-
-# 1º sweep → falha, billingAttempts=1, nextRetryAt=now+2min
+# 2. Dispara sweep
 curl -s -X POST http://localhost:8080/v1/admin/billing/trigger-sweep
 
-# Aguarda backoff (2 min com base-delay=1)
-echo "Aguardando backoff de 2 minutos..."
-sleep 125
-
-# 2º sweep → sucede, billingAttempts=0, status=ACTIVE renovada
-curl -s -X POST http://localhost:8080/v1/admin/billing/trigger-sweep
-
-sleep 3
-curl -s http://localhost:8080/v1/subscriptions/$SUB2_ID \
-  -H "X-User-Id: $USER2_ID" | jq '{status, billingAttempts}'
+# 3. Aguarda Kafka processar e verifica
+sleep 5
+curl -s http://localhost:8080/v1/admin/verify | jq '{passed, checks: {suspended: .checks.suspended}}'
 ```
 
-**Resultado esperado:** após o 2º sweep, `status: ACTIVE`, `billingAttempts: 0` (renovada com sucesso).
+**Resultado esperado:** `checks.suspended.actual ≈ 2` (10% de 20), `passed: true`.
+As subs suspensas têm `status: SUSPENDED`, `autoRenew: false`, `next_retry_at: null`.
 
 ---
 
-### 🧪 Cenário 5 — Força suspensão via admin (demonstração imediata)
+### 🧪 Cenário 5 — Verificação automática pós-seed (endpoint de health check de negócio)
 
 ```bash
-# Pegar o ID de qualquer assinatura ACTIVE do seed
-ACTIVE_ID=$(curl -s http://localhost:8080/v1/admin/subscriptions \
-  | jq -r '[.[] | select(.status == "ACTIVE")] | first | .id')
-
-echo "Suspendendo assinatura: $ACTIVE_ID"
-
-# Forçar suspensão via admin (mesmo caminho do scheduler — suspendSubscriptionAtomic)
-curl -s -X POST http://localhost:8080/v1/admin/subscriptions/$ACTIVE_ID/force-suspend \
-  -w "HTTP %{http_code}\n"
-
-# Confirmar no admin
-curl -s http://localhost:8080/v1/admin/subscriptions \
-  | jq "[.[] | select(.id == \"$ACTIVE_ID\") | {status, auto_renew, next_retry_at}]"
+# Seed + sweep + verify em sequência
+curl -s -X POST "http://localhost:8080/api/test/seed?count=20" | jq '.totalSeeded'
+curl -s -X POST http://localhost:8080/v1/admin/billing/trigger-sweep
+sleep 5
+curl -s http://localhost:8080/v1/admin/verify | jq .
 ```
 
-**Resultado esperado:** `status: SUSPENDED`, `auto_renew: false`, `next_retry_at: null`.
+**Resultado esperado completo:**
+
+```json
+{
+  "passed": true,
+  "checks": {
+    "active":         { "actual": 16, "passed": true },
+    "suspended":      { "actual": 2,  "passed": true },
+    "becameInactive": { "actual": 2,  "passed": true },
+    "outboxClean":    { "pending": 0, "passed": true }
+  }
+}
+```
+
+| Grupo | % seed | Token | Resultado após sweep |
+|---|---|---|---|
+| 70% renovação normal | `billingAttempts=0` | `tok_test_success` | `ACTIVE` renovada |
+| 10% retry (falhou 1x) | `billingAttempts=1` | `tok_test_success` | `ACTIVE` renovada |
+| 10% beira do abismo | `billingAttempts=2` | `tok_test_always_fail` | `SUSPENDED` |
+| 10% cancelados vencidos | `CANCELED` | — | `INACTIVE` |
+
+
 
 ---
 
@@ -866,9 +983,9 @@ Chamada ao gateway:
 
 Configuração:
   Circuit Breaker:
-    sliding-window-size: 10 chamadas
+    sliding-window-size: 20 chamadas
     failure-rate-threshold: 50%         → abre o circuito se >50% falhar
-    wait-duration-in-open-state: 30s    → tempo aberto antes de testar HALF-OPEN
+    wait-duration-in-open-state: 10s    → tempo aberto antes de testar HALF-OPEN
     permitted-calls-in-half-open: 3     → sondagem antes de fechar
 
   Retry (initialCharge):

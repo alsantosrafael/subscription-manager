@@ -3,6 +3,7 @@ package com.platform.subscription_manager.shared.config;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -53,6 +54,18 @@ public class GlobalExceptionHandler {
 	@ExceptionHandler(ConflictException.class)
 	public ProblemDetail handleConflict(ConflictException ex) {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+		problem.setTitle("Conflict");
+		return problem;
+	}
+
+	@ExceptionHandler(DataIntegrityViolationException.class)
+	public ProblemDetail handleDataIntegrity(DataIntegrityViolationException ex) {
+		// uk_subscription_user_id fires when two concurrent requests race past the
+		// app-level "already has active subscription" check. Surface as 409, not 500.
+		String detail = ex.getMessage() != null && ex.getMessage().contains("uk_subscription_user_id")
+			? "User already has a subscription"
+			: "Data integrity violation";
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, detail);
 		problem.setTitle("Conflict");
 		return problem;
 	}
