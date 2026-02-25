@@ -14,12 +14,12 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
-import jakarta.persistence.Version;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 @Entity
@@ -68,8 +68,6 @@ public class Subscription {
 	@Column(name = "last_billing_attempt")
 	private LocalDateTime lastBillingAttempt;
 
-	@Version
-	private Long version;
 
 	public static Subscription create(UUID userId, Plan plan, String paymentToken) {
 		Subscription sub = new Subscription();
@@ -77,7 +75,7 @@ public class Subscription {
 		sub.plan = plan;
 		sub.paymentToken = paymentToken;
 		sub.status = SubscriptionStatus.ACTIVE;
-		sub.startDate = LocalDateTime.now();
+		sub.startDate = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
 		sub.expiringDate = BillingCyclePolicy.calculateNextExpiration(sub.startDate);
 		sub.autoRenew = true;
 		sub.billingAttempts = 0;
@@ -111,7 +109,7 @@ public class Subscription {
 		this.plan = newPlan;
 		this.paymentToken = newPaymentToken;
 		this.status = SubscriptionStatus.ACTIVE;
-		this.startDate = LocalDateTime.now();
+		this.startDate = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
 		this.expiringDate = BillingCyclePolicy.calculateNextExpiration(this.startDate);
 		this.autoRenew = true;
 		this.billingAttempts = 0;
@@ -135,8 +133,9 @@ public class Subscription {
 	 * @param inFlightGuardMinutes how long to block re-dispatch (e.g. 5 minutes)
 	 */
 	public void markBillingAttempt(int inFlightGuardMinutes) {
-		this.lastBillingAttempt = LocalDateTime.now();
-		this.nextRetryAt = LocalDateTime.now().plusMinutes(inFlightGuardMinutes);
+		LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
+		this.lastBillingAttempt = now;
+		this.nextRetryAt = now.plusMinutes(inFlightGuardMinutes);
 	}
 
 

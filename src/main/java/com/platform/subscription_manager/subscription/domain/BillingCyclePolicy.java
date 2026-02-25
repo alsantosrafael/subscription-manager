@@ -2,6 +2,7 @@ package com.platform.subscription_manager.subscription.domain;
 
 import java.time.LocalDateTime;
 import java.time.YearMonth;
+import java.time.temporal.ChronoUnit;
 
 /**
  * Domain Policy responsible for calculating the next billing cycle date.
@@ -17,12 +18,13 @@ public class BillingCyclePolicy {
 	 *   <li>Months with 30 vs 31 days (e.g. Mar 31 → Apr 30)</li>
 	 * </ul>
 	 *
-	 * <p>A random jitter of ±0–6 hours is added to spread renewal processing
-	 * load and avoid thundering-herd effects.</p>
+	 * <p>The result is truncated to microseconds to match PostgreSQL {@code TIMESTAMP}
+	 * precision, ensuring the value roundtrips through the DB without loss and
+	 * remains safe to use as a CAS guard in atomic repository queries.</p>
 	 *
 	 * @param previousDate the reference date from which the next expiry is calculated
 	 * @return a new {@link LocalDateTime} one calendar month after {@code previousDate},
-	 *         with a small random hour jitter applied
+	 *         truncated to microsecond precision
 	 */
 	public static LocalDateTime calculateNextExpiration(LocalDateTime previousDate) {
 		int year  = previousDate.getYear();
@@ -39,6 +41,6 @@ public class BillingCyclePolicy {
 			base = base.withDayOfMonth(lastDay);
 		}
 
-		return base;
+		return base.truncatedTo(ChronoUnit.MICROS);
 	}
 }

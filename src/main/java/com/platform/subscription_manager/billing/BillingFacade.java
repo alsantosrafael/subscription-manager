@@ -6,7 +6,12 @@ import java.util.UUID;
 
 /**
  * Public API of the billing module.
- * Other modules must only depend on this interface — never on billing internals.
+ *
+ * <p>Other modules must only depend on this interface — never on billing internals.
+ * This boundary is intentional: the {@code billing} module is fully self-contained
+ * and could be extracted into a standalone microservice without changes to its callers.
+ * The {@code subscription} module would simply replace this in-process call with an
+ * HTTP or messaging client implementing the same contract.</p>
  */
 public interface BillingFacade {
 

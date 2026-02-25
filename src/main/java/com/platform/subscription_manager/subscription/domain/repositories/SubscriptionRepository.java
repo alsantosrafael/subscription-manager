@@ -69,8 +69,9 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
             s.billingAttempts = 0, 
             s.lastBillingAttempt = null,
             s.nextRetryAt = :nextDate
-        WHERE s.id = :id 
+        WHERE s.id = :id
           AND s.expiringDate = :currentExpiringDate
+          AND s.status = 'ACTIVE'
     """)
 	int renewSubscriptionAtomic(
 		@Param("id") UUID id,
