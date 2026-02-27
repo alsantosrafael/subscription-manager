@@ -138,8 +138,8 @@ public class SmokeTestSeederController {
 		log.info("💾 Inserindo assinaturas no banco...");
 		jdbcTemplate.batchUpdate("""
             INSERT INTO subscriptions 
-            (id, user_id, plan, status, payment_token, start_date, expiring_date, auto_renew, billing_attempts, last_billing_attempt, next_retry_at, version) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            (id, user_id, plan, status, payment_token, start_date, expiring_date, auto_renew, billing_attempts, last_billing_attempt, next_retry_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, subsBatch);
 
 		log.info("✅ Smoke Test concluído com {} registros.", count);

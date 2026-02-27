@@ -18,6 +18,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -97,7 +98,7 @@ public class SubscriptionResultListener {
 	}
 
 	private void handleFailure(Subscription sub, BillingResultEvent event, List<SubscriptionUpdatedEvent> cacheEvents) {
-		LocalDateTime now = LocalDateTime.now();
+		LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
 		int currentAttempts = sub.getBillingAttempts();
 		int attemptsAfter = currentAttempts + 1;
 

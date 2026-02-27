@@ -6,5 +6,5 @@ import java.util.UUID;
 
 public interface UserRepository extends JpaRepository<User, UUID> {
 
-	boolean existsByDocumentOrEmail(String document, String email);
+	boolean existsByDocumentOrEmailIgnoreCase(String document, String email);
 }
