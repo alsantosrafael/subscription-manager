@@ -48,7 +48,7 @@ class UserServiceTest {
         void happyPath() {
             var saved = new User(VALID_PAYLOAD.name(), VALID_PAYLOAD.document(), VALID_PAYLOAD.email());
 
-            when(userRepository.existsByDocumentOrEmail(VALID_PAYLOAD.document(), VALID_PAYLOAD.email()))
+            when(userRepository.existsByDocumentOrEmailIgnoreCase(VALID_PAYLOAD.document(), VALID_PAYLOAD.email()))
                 .thenReturn(false);
             when(userRepository.save(any(User.class))).thenReturn(saved);
 
@@ -66,7 +66,7 @@ class UserServiceTest {
         void savesOnce() {
             var saved = new User(VALID_PAYLOAD.name(), VALID_PAYLOAD.document(), VALID_PAYLOAD.email());
 
-            when(userRepository.existsByDocumentOrEmail(any(), any())).thenReturn(false);
+            when(userRepository.existsByDocumentOrEmailIgnoreCase(any(), any())).thenReturn(false);
             when(userRepository.save(any(User.class))).thenReturn(saved);
 
             userService.create(VALID_PAYLOAD);
@@ -77,7 +77,7 @@ class UserServiceTest {
         @Test
         @DisplayName("Throws ConflictException when document or email is already taken")
         void duplicateDocumentOrEmail() {
-            when(userRepository.existsByDocumentOrEmail(VALID_PAYLOAD.document(), VALID_PAYLOAD.email()))
+            when(userRepository.existsByDocumentOrEmailIgnoreCase(VALID_PAYLOAD.document(), VALID_PAYLOAD.email()))
                 .thenReturn(true);
 
             assertThrows(ConflictException.class, () -> userService.create(VALID_PAYLOAD));

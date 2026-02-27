@@ -21,7 +21,7 @@ public class UserService implements UserFacade {
 
 	@Transactional
 	public UserResponseDTO create(CreateUserDTO payload) {
-		if (userRepository.existsByDocumentOrEmail(payload.document(), payload.email())) {
+		if (userRepository.existsByDocumentOrEmailIgnoreCase(payload.document(), payload.email())) {
 			throw new ConflictException("User with this document or email already exists");
 		}
 
@@ -37,6 +37,7 @@ public class UserService implements UserFacade {
 		);
 	}
 
+	@Transactional(readOnly = true)
 	public boolean exists(UUID userId) {
 		return userRepository.existsById(userId);
 	}
