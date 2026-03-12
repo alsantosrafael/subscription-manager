@@ -73,8 +73,6 @@
 			props.put(ConsumerConfig.FETCH_MIN_BYTES_CONFIG, 1_024);
 			props.put(ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, 500);
 			props.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, 300_000);
-
-			// Consumer-side request timeout (applies to metadata/fetch request timeouts)
 			props.put("request.timeout.ms", requestTimeoutMs);
 
 			return new DefaultKafkaConsumerFactory<>(props);

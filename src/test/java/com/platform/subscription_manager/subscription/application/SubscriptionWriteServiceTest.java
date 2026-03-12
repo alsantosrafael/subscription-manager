@@ -3,6 +3,7 @@ package com.platform.subscription_manager.subscription.application;
 import com.platform.subscription_manager.billing.BillingFacade;
 import com.platform.subscription_manager.shared.domain.Plan;
 import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
+import com.platform.subscription_manager.shared.domain.exceptions.ConflictException;
 import com.platform.subscription_manager.shared.domain.exceptions.ResourceNotFoundException;
 import com.platform.subscription_manager.shared.domain.exceptions.UnprocessableEntityException;
 import com.platform.subscription_manager.shared.infrastructure.messaging.SubscriptionUpdatedEvent;
@@ -84,7 +85,7 @@ class SubscriptionWriteServiceTest {
             when(userFacade.exists(USER_ID)).thenReturn(true);
             when(subscriptionRepository.findByUserId(USER_ID)).thenReturn(Optional.of(active));
 
-            assertThrows(com.platform.subscription_manager.shared.domain.exceptions.ConflictException.class,
+            assertThrows(ConflictException.class,
                 () -> subscriptionWriteService.saveSubscription(dto));
             verify(subscriptionRepository, never()).save(any());
         }
