@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
+import java.util.concurrent.CompletableFuture;
 
 @Component
 public class RenewalEventDispatcher {
@@ -18,12 +19,11 @@ public class RenewalEventDispatcher {
 	public RenewalEventDispatcher(KafkaTemplate<Object, Object> kafkaTemplate) {
 		this.kafkaTemplate = kafkaTemplate;
 	}
-	// Annotation responsible for avoiding dual-write considering modulith outbox transactional and threads (async)
 	@ApplicationModuleListener
-	public void onRenewalRequested(RenewalRequestedEvent event) {
+	public CompletableFuture<Void> onRenewalRequested(RenewalRequestedEvent event) {
 		log.info("🚀 [OUTBOX DISPATCHER] Lendo evento do banco e enviando para o Kafka. Assinatura: {}", event.subscriptionId());
 
-		kafkaTemplate.send(TOPIC_NAME, event.subscriptionId().toString(), event)
+		return kafkaTemplate.send(TOPIC_NAME, event.subscriptionId().toString(), event)
 			.whenComplete((result, ex) -> {
 				if (ex != null) {
 					log.error("❌ Falha crítica ao enviar para o Kafka. Modulith fará o retry. Erro: {}", ex.getMessage());
@@ -34,6 +34,6 @@ public class RenewalEventDispatcher {
 						result.getRecordMetadata().offset());
 				}
 			})
-			.join();
+			.thenAccept(result -> {});
 	}
 }

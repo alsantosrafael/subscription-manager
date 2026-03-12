@@ -1,6 +1,7 @@
 package com.platform.subscription_manager.subscription.infrastructure.web;
 
 import com.platform.subscription_manager.shared.config.PaymentTokenConverter;
+import com.platform.subscription_manager.subscription.domain.BillingRetryPolicy;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -179,19 +180,11 @@ public class SmokeTestSeederController {
 		LocalDateTime nextRetry = null;
 		if (autoRenew) {
 			if (attempts > 0 && lastAttempt != null) {
-				// Mirror the exact backoff formula used by SubscriptionResultListener:
-				// delay = 2^attempts * baseDelayMinutes — seeded state is consistent with production
-				long delayMinutes = (long) Math.pow(2, attempts) * baseDelayMinutes;
-				nextRetry = lastAttempt.plusMinutes(delayMinutes);
+				nextRetry = BillingRetryPolicy.calculateNextRetry(attempts, baseDelayMinutes, lastAttempt);
 			} else {
-				// No prior failures — nextRetryAt = expiringDate (due now, eligible immediately)
 				nextRetry = expire;
 			}
 		}
-		// autoRenew=false (CANCELED/SUSPENDED): nextRetryAt stays null — scheduler ignores these rows
-		// in findEligibleForRenewal (which requires autoRenew=true) and only sweeps them via
-		// expireCanceledSubscriptions.
-
 		return new Object[]{
 			UUID.randomUUID(),
 			userId,

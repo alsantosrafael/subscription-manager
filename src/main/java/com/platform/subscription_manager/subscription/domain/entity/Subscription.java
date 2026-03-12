@@ -1,6 +1,7 @@
 package com.platform.subscription_manager.subscription.domain.entity;
 
 import com.platform.subscription_manager.subscription.domain.BillingCyclePolicy;
+import com.platform.subscription_manager.subscription.domain.BillingRetryPolicy;
 import com.platform.subscription_manager.shared.domain.Plan;
 import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import com.platform.subscription_manager.shared.config.PaymentTokenConverter;
@@ -150,5 +151,39 @@ public class Subscription {
 		this.billingAttempts = 0;
 		this.lastBillingAttempt = null;
 		this.nextRetryAt = nextDate;
+	}
+
+	public record BillingFailureResult(boolean suspended, LocalDateTime nextRetryAt) {}
+
+	/**
+	 * Computes the failure outcome without mutating the entity yet.
+	 * This prevents JPA from auto-flushing dirty state before atomic @Modifying queries execute.
+	 */
+	public BillingFailureResult calculateBillingFailure(int maxAttempts, int baseDelayMinutes, LocalDateTime now) {
+		int attemptsAfter = this.billingAttempts + 1;
+
+		if (attemptsAfter >= maxAttempts) {
+			return new BillingFailureResult(true, null);
+		} else {
+			LocalDateTime next = BillingRetryPolicy.calculateNextRetry(attemptsAfter, baseDelayMinutes, now);
+			return new BillingFailureResult(false, next);
+		}
+	}
+
+	/**
+	 * Applies the failure result to the in-memory entity state.
+	 * Must only be called AFTER the atomic repository UPDATE confirms success (updated > 0).
+	 */
+	public void applyBillingFailure(BillingFailureResult result, LocalDateTime now) {
+		this.billingAttempts++;
+		this.lastBillingAttempt = now;
+
+		if (result.suspended()) {
+			this.status = SubscriptionStatus.SUSPENDED;
+			this.autoRenew = false;
+			this.nextRetryAt = null;
+		} else {
+			this.nextRetryAt = result.nextRetryAt();
+		}
 	}
 }

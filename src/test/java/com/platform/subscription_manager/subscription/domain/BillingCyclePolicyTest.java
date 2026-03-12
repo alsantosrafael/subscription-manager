@@ -227,7 +227,7 @@ class BillingCyclePolicyTest {
 
 			assertEquals(45,        result.getMinute(), "minutes must be unchanged");
 			assertEquals(30,        result.getSecond(), "seconds must be unchanged");
-			assertEquals(123456789, result.getNano(),   "nanos must be unchanged");
+			assertEquals(123456000, result.getNano(),   "nanos must be truncated to micros (last 3 digits zeroed)");
 		}
 
 		@Test

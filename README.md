@@ -107,42 +107,49 @@ Ao final de cada ciclo: **Snapshot** — contagem de assinaturas por status.
 # Workflow completo usando endpoints
 TS=$(date +%s)
 
-echo "=== STEP 1: Create User ===" && \
+echo "=== STEP 1: Create User ==="
 USER_BODY=$(curl -s -X POST http://localhost:8080/v1/users \
   -H "Content-Type: application/json" \
-  -d "{\"name\":\"Rafael Demo\",\"document\":\"${TS:0:11}\",\"email\":\"demo_${TS}@test.com\"}") && \
-echo "$USER_BODY" && \
-USER_ID=$(echo "$USER_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+  -d "{\"name\":\"Rafael Demo\",\"document\":\"${TS:0:11}\",\"email\":\"demo_${TS}@test.com\"}")
+echo "$USER_BODY"
+USER_ID=$(echo "$USER_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
-echo "" && echo "=== STEP 2: Create Subscription ===" && \
+echo ""
+echo "=== STEP 2: Create Subscription ==="
 SUB_BODY=$(curl -s -X POST http://localhost:8080/v1/subscriptions \
   -H "Content-Type: application/json" \
-  -d "{\"userId\":\"$USER_ID\",\"plan\":\"PREMIUM\",\"paymentToken\":\"tok_test_success\"}") && \
-echo "$SUB_BODY" && \
-SUB_ID=$(echo "$SUB_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+  -d "{\"userId\":\"$USER_ID\",\"plan\":\"PREMIUM\",\"paymentToken\":\"tok_test_success\"}")
+echo "$SUB_BODY"
+SUB_ID=$(echo "$SUB_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
-echo "" && echo "=== STEP 3: GET Subscription ===" && \
-curl -s "http://localhost:8080/v1/subscriptions/$SUB_ID" -H "X-User-Id: $USER_ID" && \
+echo ""
+echo "=== STEP 3: GET Subscription ==="
+curl -s "http://localhost:8080/v1/subscriptions/$SUB_ID" -H "X-User-Id: $USER_ID"
 
-echo "" && echo "=== STEP 4: Cancel ===" && \
+echo ""
+echo "=== STEP 4: Cancel ==="
 curl -s -w "\nHTTP:%{http_code}" -X PATCH \
   "http://localhost:8080/v1/subscriptions/$SUB_ID/cancel" \
-  -H "X-User-Id: $USER_ID" && \
+  -H "X-User-Id: $USER_ID"
 
-echo "" && echo "=== STEP 5: GET after cancel ===" && \
-curl -s "http://localhost:8080/v1/subscriptions/$SUB_ID" -H "X-User-Id: $USER_ID" && \
+echo ""
+echo "=== STEP 5: GET after cancel ==="
+curl -s "http://localhost:8080/v1/subscriptions/$SUB_ID" -H "X-User-Id: $USER_ID"
 
-echo "" && echo "=== STEP 6: Reactivate CANCELED->ACTIVE (plan PREMIUM->BASICO) ===" && \
+echo ""
+echo "=== STEP 6: Reactivate CANCELED->ACTIVE (plan PREMIUM->BASICO) ==="
 curl -s -X POST http://localhost:8080/v1/subscriptions \
   -H "Content-Type: application/json" \
-  -d "{\"userId\":\"$USER_ID\",\"plan\":\"BASICO\",\"paymentToken\":\"tok_test_success\"}" && \
+  -d "{\"userId\":\"$USER_ID\",\"plan\":\"BASICO\",\"paymentToken\":\"tok_test_success\"}"
 
-echo "" && echo "=== STEP 7: 409 — duplicate while ACTIVE ===" && \
+echo ""
+echo "=== STEP 7: 409 — duplicate while ACTIVE ==="
 curl -s -X POST http://localhost:8080/v1/subscriptions \
   -H "Content-Type: application/json" \
-  -d "{\"userId\":\"$USER_ID\",\"plan\":\"FAMILIA\",\"paymentToken\":\"tok_test_success\"}" && \
+  -d "{\"userId\":\"$USER_ID\",\"plan\":\"FAMILIA\",\"paymentToken\":\"tok_test_success\"}"
 
-echo "" && echo "=== DONE ==="
+echo ""
+echo "=== DONE ==="
 ```
 ```bash
 # Seed pontual
@@ -174,11 +181,13 @@ O endpoint compara o estado atual do banco com os resultados esperados para cada
   "passed": true,
   "totalSubscriptions": 20,
   "checks": {
-    "renewedSuccessfully": {
+    "active": {
       "actual": 16,
       "expected_approx": 16,
       "passed": true,
-      "note": "ACTIVE + billingAttempts=0 + expiringDate > hoje (~80% do total)"
+      "detail_clean_renewal": 16,
+      "detail_pending_retry": 0,
+      "note": "ACTIVE total (~80%): renovadas limpas + pendentes de retry. Ambas são comportamento correto."
     },
     "suspended": {
       "actual": 2,
@@ -207,7 +216,7 @@ O endpoint compara o estado atual do banco com os resultados esperados para cada
 | Campo | Significado |
 |---|---|
 | `passed: true` | Todos os cenários bateram com tolerância de 5% |
-| `renewedSuccessfully` | Assinaturas renovadas com sucesso (~80% do seed) |
+| `active` | Assinaturas renovadas com sucesso ou ativas pendentes de retry (~80% do seed) |
 | `suspended` | Assinaturas suspensas após 3 falhas de cobrança (~10%) |
 | `becameInactive` | Assinaturas canceladas que expiraram e viraram INACTIVE (~10%) |
 | `outboxClean` | Nenhum evento pendente no outbox — Kafka processou tudo |
@@ -267,6 +276,97 @@ O teste dura 60s (15s rampa ↑ + 30s fogo cerrado + 15s rampa ↓) e mede:
 > **Todos os cenários abaixo são executáveis com copy-paste.** A aplicação deve estar rodando com `--spring.profiles.active=local`.
 >
 > O backoff está configurado com `base-delay-minutes=1` — o ciclo completo de 3 falhas e suspensão é observável em **~7 minutos**.
+
+### 📮 API Collections — Postman & Hoppscotch
+
+Duas coleções prontas para importar e testar a API com auto-população de variáveis:
+
+#### Arquivos
+
+| Ferramenta | Arquivo | Tipo |
+|---|---|---|
+| **Postman** | `subscription-manager-postman.json` | Desktop app (mais recursos) |
+| **Hoppscotch** | `subscription-manager-hoppscotch.json` | Web app (sem instalação) |
+
+#### Como usar
+
+**Postman:**
+1. Download: https://www.postman.com/downloads/
+2. File → Import → Selecione `subscription-manager-postman.json`
+3. Navegue até "🧪 Scenario 1" e clique Run
+4. Variables auto-populam entre requests
+5. Veja assertivas nos Test Results
+
+#### Estrutura das coleções
+
+```
+Users/
+  ├─ Create User (salva userId automaticamente)
+  └─ Get User by ID
+
+Subscriptions/
+  ├─ Create Subscription (tok_test_success)
+  ├─ Create Subscription (tok_test_always_fail)
+  ├─ Get Subscription
+  └─ Cancel Subscription
+
+Admin/
+  ├─ Trigger Sweep
+  ├─ List All Subscriptions
+  ├─ Force Suspend
+  └─ Verify Business Scenarios
+
+Test Utils/
+  ├─ Seed (20 subscriptions)
+  └─ Seed (2000 subscriptions)
+
+🧪 Cenários
+  ├─ Scenario 1 — Happy Path (criar user → sub → verificar ACTIVE)
+  ├─ Scenario 2 — Cancellation (cancelar → verificar CANCELED)
+  └─ Scenario 3 — Seed + Sweep (seed → sweep → verificar todos os states)
+```
+
+#### Workflows recomendados
+
+**Happy Path (5 min):**
+```
+1. Scenario 1 — Happy Path
+   → Cria user + subscription
+   → Verifica status ACTIVE
+```
+
+**Full Demo (10 min):**
+```
+1. Scenario 3 — Seed + Sweep
+   → Seeds 20 assinaturas diversas
+   → Dispara sweep de renovação
+   → Verifica 4 estados de negócio:
+      ✅ ACTIVE (renovadas)
+      ✅ SUSPENDED (falhas 3x)
+      ✅ INACTIVE (expiradas)
+      ✅ ACTIVE retry (falha 1x, recuperada)
+```
+
+**Cancelamento (3 min):**
+```
+1. Users → Create User
+2. Subscriptions → Create Subscription
+3. Scenario 2 — Cancellation
+   → Verifica status CANCELED
+   → Verifica autoRenew = false
+```
+
+#### Diferenças entre Postman e Hoppscotch
+
+| Recurso | Postman | Hoppscotch |
+|---|---|---|
+| Instalação | App desktop | Browser (sem instalar) |
+| Assertivas de teste | ✅ Sim (`pm.test()`) | ❌ Manual |
+| Console de debug | ✅ Postman Console | ✅ Browser DevTools |
+| Variable syntax | `{{variable}}` | `<<variable>>` |
+| Recomendado para | QA/automatização | Exploração rápida |
+
+---
 
 ### Tokens do Gateway (WireMock)
 
@@ -462,7 +562,6 @@ curl -s http://localhost:8080/v1/admin/verify | jq .
 │ billing_attempts  INT            │
 │ next_retry_at     TIMESTAMP      │
 │ last_billing_attempt TIMESTAMP   │
-│ version           BIGINT         │  ← Optimistic lock
 │ created_at        TIMESTAMP      │
 │ updated_at        TIMESTAMP      │
 └──────────────────┬───────────────┘
@@ -546,7 +645,6 @@ curl -s http://localhost:8080/v1/admin/verify | jq .
 - [x] Circuit Breaker (Resilience4j) no cliente do gateway de pagamento
 - [x] Backoff exponencial nas retentativas de renovação
 - [x] ShedLock — scheduler distribuído, sem execução duplicada em múltiplos nós
-- [x] Locking otimista (`@Version`) na entidade `Subscription`
 - [x] Updates atômicos via JPQL (`renewSubscriptionAtomic`, `suspendSubscriptionAtomic`, `incrementFailureAtomic`)
 - [x] Virtual Threads (Java 21) no processamento em lote do Kafka
 - [x] TTL inteligente no Redis por status (ACTIVE/CANCELED vs SUSPENDED/INACTIVE)
