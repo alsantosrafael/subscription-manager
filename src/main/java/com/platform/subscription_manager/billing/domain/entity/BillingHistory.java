@@ -11,10 +11,24 @@ import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.CreationTimestamp;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+/**
+ * Audit record for every billing attempt (initial charge + Kafka-driven renewals).
+ *
+ * <p>Lifecycle:
+ * <ol>
+ *   <li>A PENDING row is inserted via {@code insertIfNotExist} <em>before</em> the gateway
+ *       call. {@code processed_at} is null at this stage.</li>
+ *   <li>Once the gateway responds, {@code updateResult} stamps {@code processed_at} and
+ *       sets the final status (SUCCESS or FAILED).</li>
+ * </ol>
+ *
+ * <p>The {@code idempotency_key} unique constraint prevents double-charging on retries.
+ */
 @Entity
 @Table(name = "billing_history")
 @Getter
@@ -37,27 +51,10 @@ public class BillingHistory {
 	@Column(name = "gateway_transaction_id")
 	private String gatewayTransactionId;
 
-	@Column(name = "processed_at", nullable = false)
+	@Column(name = "processed_at")
 	private LocalDateTime processedAt;
 
-	public static BillingHistory createPending(UUID subscriptionId, String idempotencyKey) {
-		BillingHistory history = new BillingHistory();
-		history.id = UUID.randomUUID();
-		history.subscriptionId = subscriptionId;
-		history.idempotencyKey = idempotencyKey;
-		history.status = BillingHistoryStatus.PENDING;
-		history.processedAt = LocalDateTime.now();
-		return history;
-	}
-
-	public void markAsSuccess(String gatewayTransactionId) {
-		this.gatewayTransactionId = gatewayTransactionId;
-		this.status = BillingHistoryStatus.SUCCESS;
-		this.processedAt = LocalDateTime.now();
-	}
-
-	public void markAsFailed() {
-		this.status = BillingHistoryStatus.FAILED;
-		this.processedAt = LocalDateTime.now();
-	}
+	@Column(name = "created_at", nullable = false, updatable = false)
+	@CreationTimestamp
+	private LocalDateTime createdAt;
 }

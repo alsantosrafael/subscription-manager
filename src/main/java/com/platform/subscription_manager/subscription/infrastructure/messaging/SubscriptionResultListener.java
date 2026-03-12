@@ -1,7 +1,6 @@
 package com.platform.subscription_manager.subscription.infrastructure.messaging;
 
 import com.platform.subscription_manager.shared.domain.BillingHistoryStatus;
-import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import com.platform.subscription_manager.shared.infrastructure.messaging.BillingResultEvent;
 import com.platform.subscription_manager.shared.infrastructure.messaging.SubscriptionUpdatedEvent;
 import com.platform.subscription_manager.subscription.domain.BillingCyclePolicy;
@@ -28,7 +27,7 @@ public class SubscriptionResultListener {
 	private static final Logger log = LoggerFactory.getLogger(SubscriptionResultListener.class);
 	private final SubscriptionRepository repository;
 	private final TransactionTemplate transactionTemplate;
-	private final ApplicationEventPublisher eventPublisher; // Para disparar o update do cache
+	private final ApplicationEventPublisher eventPublisher;
 
 	@Value("${billing.retry.max-attempts:3}")
 	private int maxAttempts;
@@ -90,38 +89,50 @@ public class SubscriptionResultListener {
 		int updated = repository.renewSubscriptionAtomic(sub.getId(), event.referenceExpiringDate(), nextDate);
 
 		if (updated == 1) {
-			// Reflect what the atomic UPDATE wrote — no extra DB round-trip needed
 			sub.applyRenewal(nextDate);
 			log.info("🎉 Sub {} renovada até {}", sub.getId(), nextDate);
 			cacheEvents.add(new SubscriptionUpdatedEvent(sub.getId(), sub.getUserId(), sub.getStatus(), sub.getPlan(), sub.getStartDate(), sub.getExpiringDate(), sub.isAutoRenew()));
+		} else {
+			log.warn("🔄 [BILLING] renewSubscriptionAtomic retornou 0 para sub {} (referenceExpiringDate={}). " +
+				"Provável renovação concorrente ou reentrega do Kafka — ignorando.",
+				sub.getId(), event.referenceExpiringDate());
 		}
 	}
 
 	private void handleFailure(Subscription sub, BillingResultEvent event, List<SubscriptionUpdatedEvent> cacheEvents) {
 		LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
-		int currentAttempts = sub.getBillingAttempts();
-		int attemptsAfter = currentAttempts + 1;
+		int expectedAttempts = sub.getBillingAttempts();
 
-		SubscriptionStatus resultingStatus;
-		boolean resultingAutoRenew;
+		Subscription.BillingFailureResult result = sub.calculateBillingFailure(maxAttempts, baseDelayMinutes, now);
 
-		if (attemptsAfter >= maxAttempts) {
-			repository.suspendSubscriptionAtomic(sub.getId(), event.referenceExpiringDate(), now, currentAttempts);
-			resultingStatus = SubscriptionStatus.SUSPENDED;
-			resultingAutoRenew = false;
-			log.warn("🔴 [BILLING] Sub {} SUSPENSA após {} falhas consecutivas. autoRenew=false. Requer reativação manual.",
-				sub.getId(), attemptsAfter);
+		int updated;
+		if (result.suspended()) {
+			updated = repository.suspendSubscriptionAtomic(sub.getId(), event.referenceExpiringDate(), now, expectedAttempts);
+			if (updated > 0) {
+				sub.applyBillingFailure(result, now);
+				log.warn("🔴 [BILLING] Sub {} SUSPENSA após {} falhas consecutivas. autoRenew=false. Requer reativação manual.",
+					sub.getId(), sub.getBillingAttempts());
+			} else {
+				log.warn("🔄 [BILLING] suspendSubscriptionAtomic retornou 0 para sub {} (tentativasEsperadas={}, referenceExpiringDate={}). " +
+					"Atualização concorrente ou reentrega do Kafka — ignorando.",
+					sub.getId(), expectedAttempts, event.referenceExpiringDate());
+			}
 		} else {
-			long delayMinutes = (long) Math.pow(2, attemptsAfter) * baseDelayMinutes;
-			LocalDateTime nextRetryAt = now.plusMinutes(delayMinutes);
-			repository.incrementFailureAtomic(sub.getId(), event.referenceExpiringDate(), now, nextRetryAt, currentAttempts);
-			resultingStatus = SubscriptionStatus.ACTIVE;
-			resultingAutoRenew = true;
-			log.warn("⚠️ Sub {} falhou ({} tentativa(s)). Próxima tentativa em: {}", sub.getId(), attemptsAfter, nextRetryAt);
+			updated = repository.incrementFailureAtomic(sub.getId(), event.referenceExpiringDate(), now, result.nextRetryAt(), expectedAttempts);
+			if (updated > 0) {
+				sub.applyBillingFailure(result, now);
+				log.warn("⚠️ Sub {} falhou ({} tentativa(s)). Próxima tentativa em: {}", sub.getId(), sub.getBillingAttempts(), result.nextRetryAt());
+			} else {
+				log.warn("🔄 [BILLING] incrementFailureAtomic retornou 0 para sub {} (tentativasEsperadas={}, referenceExpiringDate={}). " +
+					"Atualização concorrente ou reentrega do Kafka — ignorando.",
+					sub.getId(), expectedAttempts, event.referenceExpiringDate());
+			}
 		}
 
-		cacheEvents.add(new SubscriptionUpdatedEvent(
-			sub.getId(), sub.getUserId(), resultingStatus,
-			sub.getPlan(), sub.getStartDate(), sub.getExpiringDate(), resultingAutoRenew));
+		if (updated > 0) {
+			cacheEvents.add(new SubscriptionUpdatedEvent(
+				sub.getId(), sub.getUserId(), sub.getStatus(),
+				sub.getPlan(), sub.getStartDate(), sub.getExpiringDate(), sub.isAutoRenew()));
+		}
 	}
 }

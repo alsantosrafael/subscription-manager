@@ -19,9 +19,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
-import java.util.HashSet;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -75,24 +74,24 @@ public class RenewalOrchestratorService {
 	}
 
 	private void processPendingRenewals(LocalDateTime now) {
-		Set<UUID> dispatchedIds = new HashSet<>();
-
+		LocalDateTime truncatedNow = now.truncatedTo(ChronoUnit.MICROS);
 		Slice<UUID> slice;
+		int page = 0;
+		int totalDispatched = 0;
 		do {
 			slice = repository.findEligibleForRenewal(
 				SubscriptionStatus.ACTIVE,
-				now,
+				truncatedNow,
 				maxAttempts,
-				PageRequest.of(0, 500)
+				PageRequest.of(page, 500)
 			);
 
-			List<UUID> eligible = slice.getContent().stream()
-				.filter(id -> !dispatchedIds.contains(id))
-				.toList();
-
+			List<UUID> eligible = slice.getContent();
 			if (eligible.isEmpty()) {
 				break;
 			}
+
+			log.info("📋 [RENEWAL] Processando página {} com {} subscrições elegíveis.", page, eligible.size());
 
 			for (UUID id : eligible) {
 				try {
@@ -113,13 +112,15 @@ public class RenewalOrchestratorService {
 							managed.getBillingAttempts()
 						));
 					});
-					dispatchedIds.add(id);
+					totalDispatched++;
 				} catch (Exception e) {
 					log.error("Erro ao despachar renovação para sub {}: {}", id, e.getMessage());
-					dispatchedIds.add(id);
 				}
 			}
-		} while (slice.hasNext());
-	}
 
+			page++;
+		} while (slice.hasNext());
+
+		log.info("📋 [RENEWAL] Total enviado no ciclo corrente: {} subscrições.", totalDispatched);
+	}
 }

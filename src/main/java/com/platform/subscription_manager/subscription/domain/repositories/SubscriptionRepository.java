@@ -22,13 +22,14 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
 	Optional<Subscription> findByIdAndUserId(UUID id, UUID userId);
 
 	@Query("""
-        SELECT s.id FROM Subscription s
-        WHERE s.status = :status
-          AND s.autoRenew = true
-          AND s.expiringDate <= :now
-          AND s.billingAttempts < :maxAttempts
-          AND s.nextRetryAt <= :now
-        """)
+		SELECT s.id FROM Subscription s
+		WHERE s.status = :status
+		  AND s.autoRenew = true
+		  AND s.expiringDate <= :now
+		  AND s.billingAttempts < :maxAttempts
+		  AND (s.nextRetryAt IS NULL OR s.nextRetryAt <= :now)
+		ORDER BY s.nextRetryAt ASC, s.id ASC
+		""")
 	Slice<UUID> findEligibleForRenewal(
 		@Param("status") SubscriptionStatus status,
 		@Param("now") LocalDateTime now,

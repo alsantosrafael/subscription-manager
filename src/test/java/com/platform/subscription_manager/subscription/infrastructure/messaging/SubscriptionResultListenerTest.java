@@ -140,8 +140,8 @@ class SubscriptionResultListenerTest {
                 sub.getId(), null, BillingHistoryStatus.FAILED, expiring, "card declined");
 
             when(repository.findById(sub.getId()))
-                .thenReturn(Optional.of(sub))   // first call: load for processing
-                .thenReturn(Optional.of(sub));  // second call: re-fetch for cache event
+                .thenReturn(Optional.of(sub));
+            when(repository.incrementFailureAtomic(any(), any(), any(), any(), anyInt())).thenReturn(1);
 
             processRecord(event);
 
@@ -161,8 +161,8 @@ class SubscriptionResultListenerTest {
                 sub.getId(), null, BillingHistoryStatus.FAILED, expiring, "card declined");
 
             when(repository.findById(sub.getId()))
-                .thenReturn(Optional.of(sub))
                 .thenReturn(Optional.of(sub));
+            when(repository.suspendSubscriptionAtomic(any(), any(), any(), anyInt())).thenReturn(1);
 
             processRecord(event);
 
@@ -181,6 +181,7 @@ class SubscriptionResultListenerTest {
                 sub.getId(), null, BillingHistoryStatus.FAILED, expiring, "card declined");
 
             when(repository.findById(sub.getId())).thenReturn(Optional.of(sub));
+            when(repository.incrementFailureAtomic(any(), any(), any(), any(), anyInt())).thenReturn(1);
 
             processRecord(event);
 
@@ -219,6 +220,7 @@ class SubscriptionResultListenerTest {
                 sub.getId(), null, BillingHistoryStatus.FAILED, expiring, "card declined");
 
             when(repository.findById(sub.getId())).thenReturn(Optional.of(sub));
+            when(repository.incrementFailureAtomic(any(), any(), any(), any(), anyInt())).thenReturn(1);
 
             processRecord(event);
 

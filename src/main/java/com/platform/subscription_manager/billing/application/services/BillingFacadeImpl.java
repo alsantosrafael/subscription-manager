@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -112,6 +113,10 @@ public class BillingFacadeImpl implements BillingFacade {
 	 */
 	@Transactional(propagation = Propagation.REQUIRES_NEW)
 	public void persistResult(String idempotencyKey, BillingHistoryStatus status, String transactionId) {
-		billingHistoryRepository.updateResult(idempotencyKey, status, transactionId);
+		LocalDateTime now = LocalDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+		int updated = billingHistoryRepository.updateResult(idempotencyKey, status, transactionId, now);
+		if (updated == 0) {
+			log.warn("[BILLING] No PENDING billing_history row found for key {}. Status {} not recorded.", idempotencyKey, status);
+		}
 	}
 }

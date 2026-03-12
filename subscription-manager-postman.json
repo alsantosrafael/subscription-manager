@@ -1,0 +1,445 @@
+{
+  "info": {
+    "name": "Subscription Manager API — Postman",
+    "description": "Optimized Postman collection for the Subscription Manager API.\n\n## Setup\n1. Import this file into Postman\n2. All variables are auto-populated by test scripts\n3. Follow the scenarios in the folders below\n\n## Collection Variables\n- `baseUrl` → `http://localhost:8080`\n- `userId` → auto-populated by \"Create User\"\n- `subscriptionId` → auto-populated by \"Create Subscription\"",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "userId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "subscriptionId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Users",
+      "description": "User management. Create a user before creating a subscription.",
+      "item": [
+        {
+          "name": "Create User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const data = pm.response.json();",
+                  "    pm.collectionVariables.set('userId', data.id);",
+                  "    pm.test('User created and userId saved', () => {",
+                  "        pm.expect(data.id).to.be.a('string');",
+                  "        pm.expect(data.name).to.equal('John Doe');",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"John Doe\",\n  \"email\": \"john@example.com\",\n  \"document\": \"12345678901\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get User by ID",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/users/{{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users", "{{userId}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Subscriptions",
+      "description": "Subscription lifecycle - creation, query, and cancellation.",
+      "item": [
+        {
+          "name": "Create Subscription (tok_test_success)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const data = pm.response.json();",
+                  "    pm.collectionVariables.set('subscriptionId', data.id);",
+                  "    pm.test('Subscription created and subscriptionId saved', () => {",
+                  "        pm.expect(data.id).to.be.a('string');",
+                  "        pm.expect(data.status).to.equal('ACTIVE');",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"plan\": \"PREMIUM\",\n  \"paymentToken\": \"tok_test_success\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Subscription (tok_test_always_fail)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"plan\": \"BASICO\",\n  \"paymentToken\": \"tok_test_always_fail\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Subscription",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-User-Id", "value": "{{userId}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions/{{subscriptionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions", "{{subscriptionId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Cancel Subscription",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "X-User-Id", "value": "{{userId}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions/{{subscriptionId}}/cancel",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions", "{{subscriptionId}}", "cancel"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "description": "Operations endpoints - trigger the scheduler and inspect global state.",
+      "item": [
+        {
+          "name": "Trigger Sweep",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/billing/trigger-sweep",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "billing", "trigger-sweep"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List All Subscriptions",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "subscriptions"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Force Suspend",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/subscriptions/{{subscriptionId}}/force-suspend",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "subscriptions", "{{subscriptionId}}", "force-suspend"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Verify Business Scenarios",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/verify",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "verify"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Test Utils",
+      "description": "Test utilities — available only in local profile.",
+      "item": [
+        {
+          "name": "Seed (20 subscriptions)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/test/seed?count=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "test", "seed"],
+              "query": [
+                { "key": "count", "value": "20" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Seed (2000 subscriptions)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/test/seed?count=2000",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "test", "seed"],
+              "query": [
+                { "key": "count", "value": "2000" }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "🧪 Scenario 1 — Happy Path",
+      "description": "Create user → subscription → get → verify ACTIVE",
+      "item": [
+        {
+          "name": "1. Create User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('userId', pm.response.json().id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Happy Path User\",\n  \"email\": \"happy@example.com\",\n  \"document\": \"99988877766\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "2. Create Subscription",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('subscriptionId', pm.response.json().id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"plan\": \"PREMIUM\",\n  \"paymentToken\": \"tok_test_success\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. Get Subscription",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-User-Id", "value": "{{userId}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions/{{subscriptionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions", "{{subscriptionId}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "🧪 Scenario 2 — Cancellation",
+      "description": "Cancel subscription → verify status is CANCELED",
+      "item": [
+        {
+          "name": "1. Cancel",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "X-User-Id", "value": "{{userId}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions/{{subscriptionId}}/cancel",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions", "{{subscriptionId}}", "cancel"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "2. Get — Verify CANCELED",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-User-Id", "value": "{{userId}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/subscriptions/{{subscriptionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "subscriptions", "{{subscriptionId}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "🧪 Scenario 3 — Seed + Sweep",
+      "description": "Full flow: seed → sweep → verify all states",
+      "item": [
+        {
+          "name": "1. Seed 20 subscriptions",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/test/seed?count=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "test", "seed"],
+              "query": [{ "key": "count", "value": "20" }]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "2. List initial state",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "subscriptions"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "3. Trigger Sweep",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/billing/trigger-sweep",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "billing", "trigger-sweep"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "4. List final state (wait 3s)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "subscriptions"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "5. Verify business correctness",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/verify",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "verify"]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
+
