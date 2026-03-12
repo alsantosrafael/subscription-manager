@@ -2,6 +2,7 @@ package com.platform.subscription_manager.subscription.infrastructure.web.contro
 
 import com.platform.subscription_manager.subscription.application.services.AdminService;
 import com.platform.subscription_manager.subscription.application.services.RenewalOrchestratorService;
+import com.platform.subscription_manager.subscription.application.services.SubscriptionExpiryService;
 import com.platform.subscription_manager.shared.infrastructure.messaging.SubscriptionUpdatedEvent;
 import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import com.platform.subscription_manager.subscription.domain.repositories.SubscriptionRepository;
@@ -38,17 +39,20 @@ public class AdminBillingController {
 	private static final Logger log = LoggerFactory.getLogger(AdminBillingController.class);
 
 	private final RenewalOrchestratorService orchestrator;
+	private final SubscriptionExpiryService expiryService;
 	private final SubscriptionRepository subscriptionRepository;
 	private final ApplicationEventPublisher eventPublisher;
 	private final TransactionTemplate transactionTemplate;
 	private final AdminService adminService;
 
 	public AdminBillingController(RenewalOrchestratorService orchestrator,
+								  SubscriptionExpiryService expiryService,
 								  SubscriptionRepository subscriptionRepository,
 								  ApplicationEventPublisher eventPublisher,
 								  TransactionTemplate transactionTemplate,
 								  AdminService adminService) {
 		this.orchestrator = orchestrator;
+		this.expiryService = expiryService;
 		this.subscriptionRepository = subscriptionRepository;
 		this.eventPublisher = eventPublisher;
 		this.transactionTemplate = transactionTemplate;
@@ -61,7 +65,7 @@ public class AdminBillingController {
 			Aciona imediatamente o mesmo fluxo que o scheduler executa a cada minuto:
 			1. Identifica assinaturas elegíveis (`ACTIVE`, `autoRenew=true`, `nextRetryAt ≤ agora`, `billingAttempts < maxAttempts`)
 			2. Persiste `nextRetryAt = now + inFlightGuardMinutes` e despacha evento via Kafka (Outbox Pattern)
-			3. Move assinaturas `CANCELED` cujo `expiringDate ≤ agora` para `INACTIVE`
+			3. Move assinaturas `CANCELED` cujo `expiringDate ≤ agora` para `INACTIVE` (via `expirySweepTask`)
 
 			Use após `POST /api/test/seed` para observar as transições de estado sem esperar 1 minuto.
 			""",
@@ -73,7 +77,33 @@ public class AdminBillingController {
 	public ResponseEntity<Void> triggerSweep() {
 		log.info("⚙️ Gatilho manual de faturamento acionado via API Administrativa.");
 		orchestrator.executeDailySweep();
+		expiryService.runExpirySweep();
 		return ResponseEntity.accepted().build();
+	}
+
+	@Operation(
+		summary = "Disparar somente o sweep de expiração",
+		description = """
+			Aciona exclusivamente o `SubscriptionExpiryService`: move assinaturas `CANCELED` cujo
+			`expiringDate ≤ agora` para `INACTIVE`, sem tocar nas renovações.
+
+			Útil para validar o scheduler de expiração isoladamente — por exemplo após criar uma
+			assinatura via `POST /v1/subscriptions` e cancelá-la com data já vencida.
+			""",
+		responses = {
+			@ApiResponse(responseCode = "202", description = "Expiry sweep concluído de forma síncrona neste request")
+		}
+	)
+	@PostMapping("/billing/trigger-expiry-sweep")
+	public ResponseEntity<Map<String, Object>> triggerExpirySweep() {
+		log.info("⚙️ Gatilho manual de expiração acionado via API Administrativa.");
+		int expired = expiryService.expireCanceledSubscriptions(LocalDateTime.now());
+		return ResponseEntity.accepted().body(Map.of(
+			"expiredToInactive", expired,
+			"message", expired > 0
+				? expired + " assinatura(s) movida(s) de CANCELED → INACTIVE."
+				: "Nenhuma assinatura CANCELED vencida encontrada."
+		));
 	}
 
 	@Operation(

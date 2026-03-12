@@ -2,6 +2,7 @@ package com.platform.subscription_manager.subscription.domain.repositories;
 
 import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import com.platform.subscription_manager.subscription.domain.entity.Subscription;
+import com.platform.subscription_manager.subscription.domain.projections.ExpiringSubscriptionRow;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -37,29 +38,37 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
 		Pageable pageable
 	);
 
+	/**
+	 * Returns one page of {@link ExpiringSubscriptionRow} for CANCELED subscriptions
+	 * whose access period has ended. Always call with {@code PageRequest.of(0, N)}: after the
+	 * caller moves the returned rows to INACTIVE they leave this result set, so the next call
+	 * to page 0 naturally surfaces the following batch without skipping any rows.
+	 */
+	@Query("""
+        SELECT NEW com.platform.subscription_manager.subscription.domain.projections.ExpiringSubscriptionRow(
+            s.id, s.userId, s.plan, s.startDate, s.expiringDate)
+        FROM Subscription s
+        WHERE s.status = 'CANCELED'
+          AND s.autoRenew = false
+          AND s.expiringDate <= :now
+        ORDER BY s.expiringDate ASC, s.id ASC
+    """)
+	Slice<ExpiringSubscriptionRow> findExpiringSubscriptionIds(@Param("now") LocalDateTime now, Pageable pageable);
+
+	/**
+	 * Moves a specific batch of IDs from CANCELED → INACTIVE.
+	 * The {@code AND s.status = 'CANCELED'} guard makes this idempotent: a row that was
+	 * already moved by a previous iteration is silently skipped.
+	 */
 	@Transactional
 	@Modifying(clearAutomatically = true)
 	@Query("""
         UPDATE Subscription s
         SET s.status = 'INACTIVE'
-        WHERE s.status = 'CANCELED'
-          AND s.autoRenew = false
-          AND s.expiringDate <= :now
+        WHERE s.id IN :ids
+          AND s.status = 'CANCELED'
     """)
-	int expireCanceledSubscriptions(@Param("now") LocalDateTime now);
-
-	/**
-	 * Returns (id, userId, plan, startDate, expiringDate) for CANCELED subscriptions that
-	 * expireCanceledSubscriptions will transition to INACTIVE. Called before the bulk UPDATE
-	 * so the orchestrator can publish complete cache events — avoids null fields in Redis.
-	 */
-	@Query("""
-        SELECT s.id, s.userId, s.plan, s.startDate, s.expiringDate FROM Subscription s
-        WHERE s.status = 'CANCELED'
-          AND s.autoRenew = false
-          AND s.expiringDate <= :now
-    """)
-	List<Object[]> findExpiringSubscriptionIds(@Param("now") LocalDateTime now);
+	int expireCanceledSubscriptionsByIds(@Param("ids") List<UUID> ids);
 
 	@Transactional
 	@Modifying(clearAutomatically = true)

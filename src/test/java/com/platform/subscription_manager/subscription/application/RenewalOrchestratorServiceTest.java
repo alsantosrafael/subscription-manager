@@ -39,46 +39,8 @@ import static org.mockito.Mockito.when;
 @DisplayName("RenewalOrchestratorService")
 class RenewalOrchestratorServiceTest {
 
-    @Nested
-    @DisplayName("Expiry sweep")
-    class ExpirySweep {
-
-        @Mock private SubscriptionRepository repository;
-        @Mock private ApplicationEventPublisher eventPublisher;
-        @Mock private TransactionTemplate transactionTemplate;
-        private RenewalOrchestratorService orchestrator;
-
-        @BeforeEach
-        void setUp() {
-            orchestrator = build(repository, eventPublisher, transactionTemplate);
-            // Stub TX so the expiry lambda actually executes
-            doAnswer(inv -> { ((java.util.function.Consumer<?>) inv.getArgument(0)).accept(null); return null; })
-                .when(transactionTemplate).executeWithoutResult(any());
-            when(repository.findEligibleForRenewal(any(), any(), anyInt(), any()))
-                .thenReturn(new SliceImpl<>(List.of()));
-        }
-
-        @Test
-        @DisplayName("Calls expireCanceledSubscriptions with a timestamp close to now")
-        void callsExpireWithNow() {
-            orchestrator.executeDailySweep();
-
-            ArgumentCaptor<LocalDateTime> captor = ArgumentCaptor.forClass(LocalDateTime.class);
-            verify(repository).expireCanceledSubscriptions(captor.capture());
-            assertTrue(captor.getValue().isAfter(LocalDateTime.now().minusSeconds(5)));
-        }
-
-        @Test
-        @DisplayName("Always delegates to expireCanceledSubscriptions — regression guard for SUSPENDED inclusion")
-        void alwaysDelegates() {
-            orchestrator.executeDailySweep();
-
-            verify(repository, times(1)).expireCanceledSubscriptions(any());
-        }
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
-    // Pending renewals — Bug 3: drain all pages. Bug 1: fixed in-flight guard.
+    // Pending renewals — drain all pages, in-flight guard, error isolation.
     // Each test stubs findEligibleForRenewal with exactly the slice it needs.
     // ─────────────────────────────────────────────────────────────────────────
     @Nested
@@ -98,7 +60,6 @@ class RenewalOrchestratorServiceTest {
         @Test
         @DisplayName("Stops after one query when page is empty")
         void stopsOnEmptyPage() {
-            // No subscriptions → TransactionTemplate is never called → do not stub it
             when(repository.findEligibleForRenewal(any(), any(), anyInt(), any()))
                 .thenReturn(new SliceImpl<>(List.of()));
 

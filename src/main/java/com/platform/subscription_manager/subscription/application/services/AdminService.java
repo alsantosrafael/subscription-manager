@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Application service encapsulating admin/observability queries.
@@ -194,12 +195,19 @@ public class AdminService {
 	 * Returns a consolidated system-wide snapshot of subscriptions by status.
 	 */
 	public Map<String, Object> systemStatus() {
-		List<Map<String, Object>> statusCounts = jdbcTemplate.queryForList("""
+		List<Map<String, Object>> statusRows = jdbcTemplate.queryForList("""
 			SELECT status, COUNT(*) AS total
 			FROM subscriptions
 			GROUP BY status
 			ORDER BY total DESC
 			""");
+
+		// Convert to {STATUS: count} object so consumers can do .countsByStatus.ACTIVE
+		Map<String, Long> countsByStatus = statusRows.stream()
+			.collect(Collectors.toMap(
+				row -> (String) row.get("status"),
+				row -> (Long)   row.get("total")
+			));
 
 		Long successfulRenewals = jdbcTemplate.queryForObject("""
 			SELECT COUNT(*) FROM subscriptions
@@ -231,7 +239,7 @@ public class AdminService {
 
 		Map<String, Object> result = new LinkedHashMap<>();
 		result.put("totalSubscriptions", total);
-		result.put("countsByStatus", statusCounts);
+		result.put("countsByStatus", countsByStatus);
 		result.put("successfulRenewals", successfulRenewals);
 		result.put("pendingRetries", pendingRetries);
 		result.put("stuckInFlight", stuckInFlight);

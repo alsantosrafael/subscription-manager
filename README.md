@@ -499,6 +499,42 @@ curl -s http://localhost:8080/v1/admin/verify | jq .
 }
 ```
 
+---
+
+### 🧪 Cenário 6 — Validação isolada dos dois schedulers
+
+Usa o script `scheduler-validation.sh` para validar `RenewalOrchestratorService` e `SubscriptionExpiryService` em **isolamento e combinado**, sem precisar analisar logs manualmente.
+
+```bash
+./scheduler-validation.sh               # contra http://localhost:8080
+./scheduler-validation.sh http://host:8080  # outro target
+```
+
+O script roda 4 seções (A–D) e exibe ✔/✘ em cada check:
+
+| Seção | O que valida |
+|---|---|
+| **A — RenewalScheduler** | Seed + `trigger-sweep`; confere ACTIVE ≈ 16, SUSPENDED ≈ 2, renovações limpas ≥ 10, outbox = 0 |
+| **B — ExpiryScheduler** | Cria assinatura, cancela, dispara `trigger-expiry-sweep`, verifica resposta com contagem |
+| **C — Combinado** | `/v1/admin/verify` com tolerância de 15% para os dois schedulers juntos |
+| **D — Referência curl** | Imprime todos os comandos avulsos para uso interativo |
+
+**Acionar cada scheduler isoladamente:**
+
+```bash
+# Ambos em sequência (renewal primeiro, expiry depois)
+curl -s -X POST http://localhost:8080/v1/admin/billing/trigger-sweep
+
+# Apenas o SubscriptionExpiryService (CANCELED → INACTIVE)
+curl -s -X POST http://localhost:8080/v1/admin/billing/trigger-expiry-sweep | jq .
+# {"expiredToInactive": 2, "message": "2 assinatura(s) movida(s) de CANCELED → INACTIVE."}
+
+# Confirmar nos logs que os dois schedulers são independentes:
+docker logs -f subscription-manager 2>&1 | grep -E '\[(RENEWAL|EXPIRY)\]'
+# 📋 [RENEWAL] Processando página 0 com N subscrições elegíveis.
+# 🗓️ [EXPIRY] N assinatura(s) movida(s) para INACTIVE neste ciclo.
+```
+
 | Grupo | % seed | Token | Resultado após sweep |
 |---|---|---|---|
 | 70% renovação normal | `billingAttempts=0` | `tok_test_success` | `ACTIVE` renovada |
@@ -651,6 +687,9 @@ curl -s http://localhost:8080/v1/admin/verify | jq .
 - [x] WireMock embarcado para simular o gateway localmente
 - [x] Seeder de dados realistas para smoke tests (`POST /api/test/seed`)
 - [x] Endpoint de disparo manual do scheduler (`POST /v1/admin/billing/trigger-sweep`)
+- [x] Scheduler separado para expiração de CANCELED → INACTIVE (`SubscriptionExpiryService`, ShedLock `expirySweepTask`)
+- [x] Endpoint dedicado para acionar somente o expiry sweep (`POST /v1/admin/billing/trigger-expiry-sweep`)
+- [x] Script de validação isolada dos schedulers (`scheduler-validation.sh`)
 - [x] Observabilidade com Micrometer + Prometheus
 - [x] Migrações schema-first com Flyway (`ddl-auto=none`)
 - [x] Cache com estratégia de TTL para evitar thundering herd
@@ -659,7 +698,7 @@ curl -s http://localhost:8080/v1/admin/verify | jq .
 ### Não implementado / trabalho futuro
 
 - [ ] Autenticação e autorização (JWT / OAuth2) — endpoints públicos no estado atual
-- [ ] Expiração automática de assinaturas `SUSPENDED` após N dias sem reativação (scheduler adicional)
+- [ ] Expiração automática de assinaturas `SUSPENDED` após N dias sem reativação
 - [ ] Endpoint de reativação de assinatura suspensa com troca de cartão via API documentada
 - [ ] Notificações ao usuário (e-mail / push) em eventos de cobrança, suspensão e expiração
 - [ ] Testes de integração end-to-end com Testcontainers (PostgreSQL + Kafka + Redis reais)
@@ -702,9 +741,10 @@ curl -s http://localhost:8080/v1/admin/verify | jq .
                       ║  │ GET  /v1/users │  │ GET  /v1/subscriptions/id │ ║
                       ║  │                │  │ PATCH .../cancel          │ ║
                       ║  │ UserFacade     │  │                           │ ║
-                      ║  │ (Port/iface)   │  │ SubscriptionService       │ ║
-                      ║  └────────────────┘  │ SubscriptionWriteService  │ ║
-                      ║                      │ RenewalOrchestratorService│ ║
+                      ║  │ (Port/iface)   │  │ SubscriptionService        │ ║
+                      ║  └────────────────┘  │ SubscriptionWriteService   │ ║
+                      ║                      │ RenewalOrchestratorService │ ║
+                      ║                      │ SubscriptionExpiryService  │ ║
                       ║                      │ SubscriptionResultListener │ ║
                       ║                      │ SubscriptionCacheUpdater   │ ║
                       ║                      └───────────────────────────┘ ║
@@ -719,7 +759,8 @@ curl -s http://localhost:8080/v1/admin/verify | jq .
                       ║  │  PaymentGatewayClient ──────────────────────────────┐
                       ║  │  BillingHistoryRepository                   │   ║   │
                       ║  │                                             │   ║   │ HTTP
-                      ║  │  POST /v1/admin/billing/trigger-sweep       │   ║   │ POST /v1/charges
+                      ║  │  POST /v1/admin/billing/trigger-sweep          │   ║   │ POST /v1/charges
+                      ║  │  POST /v1/admin/billing/trigger-expiry-sweep   │   ║   │
                       ║  │  GET  /v1/admin/subscriptions               │   ║   │
                       ║  │  POST /v1/admin/subscriptions/{id}/suspend  │   ║   ▼
                       ║  └─────────────────────────────────────────────┘   ║  ┌─────────────────────┐
@@ -793,22 +834,28 @@ Frontend / BFF
 
 ---
 
-### Fluxo de renovação automática — iniciado pelo Scheduler
+### Fluxo dos schedulers — dois jobs independentes
+
+Cada scheduler tem seu próprio `@SchedulerLock` para que um ciclo lento de expiração nunca atrase a varredura de renovações e vice-versa.
 
 ```
-@Scheduled (cron 0 * * * * *)  +  @SchedulerLock (ShedLock)
+━━━ SubscriptionExpiryService ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@Scheduled (cron 0 * * * * *)  +  @SchedulerLock("expirySweepTask", lockAtMostFor="55s")
      │
-     ├── FASE 1: Expiração de assinaturas canceladas
-     │       │
-     │       ├── findExpiringSubscriptionIds(now)     ──▶ PostgreSQL (SELECT antes do bulk UPDATE)
-     │       ├── expireCanceledSubscriptions(now)     ──▶ PostgreSQL (UPDATE bulk CANCELED → INACTIVE)
-     │       └── para cada sub expirada:
-     │               ├── log: 🔕 [SWEEP] Sub {id} → INACTIVE. Expirou em {date}
-     │               └── SubscriptionUpdatedEvent (INACTIVE)  ──▶ Redis (TTL 1h)
-     │
-     └── FASE 2: Renovação das assinaturas vencidas
+     └── expireCanceledSubscriptions(now)   ← loop page=0 fixo; rows saem do result set após UPDATE
              │
-             └── findEligibleForRenewal(Slice<UUID>, page=500)  ──▶ PostgreSQL
+             ├── findExpiringSubscriptionIds(now, PageRequest.of(0, 500))  ──▶ PostgreSQL
+             ├── expireCanceledSubscriptionsByIds(ids)  ──▶ PostgreSQL (UPDATE bulk CANCELED → INACTIVE)
+             └── para cada sub expirada:
+                     ├── log: 🔕 [EXPIRY] Sub {id} → INACTIVE. Expirou em {date}
+                     └── SubscriptionUpdatedEvent (INACTIVE)  ──▶ Redis (TTL 1h)
+
+━━━ RenewalOrchestratorService ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@Scheduled (cron 0 * * * * *)  +  @SchedulerLock("renewalSweepTask", lockAtMostFor="55s")
+     │
+     └── processPendingRenewals(now)   ← itera páginas 0, 1, 2, ... até Slice.hasNext()=false
+             │
+             └── findEligibleForRenewal(ACTIVE, now, maxAttempts, pageable)  ──▶ PostgreSQL
                      └── para cada UUID (TX individual):
                              ├── markBillingAttempt()  ──▶ PostgreSQL (in-flight guard)
                              └── publishEvent(RenewalRequestedEvent)
@@ -1146,7 +1193,7 @@ PATCH .../cancel                   SubscriptionService             status=CANCEL
 Renovação bem-sucedida             SubscriptionResultListener      status=ACTIVE,  autoRenew=true, nova expiringDate
 Falha < 3 tentativas               SubscriptionResultListener      status=ACTIVE,  autoRenew=true, billingAttempts++
 3ª falha → suspensão               SubscriptionResultListener      status=SUSPENDED, autoRenew=false
-CANCELED vencida → INACTIVE        RenewalOrchestratorService      status=INACTIVE, autoRenew=false
+CANCELED vencida → INACTIVE        SubscriptionExpiryService       status=INACTIVE, autoRenew=false
 Admin force-suspend                AdminController                  status=SUSPENDED, autoRenew=false
 ```
 
