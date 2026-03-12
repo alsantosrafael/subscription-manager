@@ -1,10 +1,8 @@
 package com.platform.subscription_manager.subscription.application.services;
 
 
-import com.platform.subscription_manager.shared.domain.Plan;
 import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import com.platform.subscription_manager.shared.infrastructure.messaging.RenewalRequestedEvent;
-import com.platform.subscription_manager.shared.infrastructure.messaging.SubscriptionUpdatedEvent;
 import com.platform.subscription_manager.subscription.domain.entity.Subscription;
 import com.platform.subscription_manager.subscription.domain.repositories.SubscriptionRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -45,32 +43,12 @@ public class RenewalOrchestratorService {
 	}
 
 	@Scheduled(cron = "0 * * * * *")
-	@SchedulerLock(name = "dailySweepTask", lockAtMostFor = "55s", lockAtLeastFor = "1s")
+	@SchedulerLock(name = "renewalSweepTask", lockAtMostFor = "55s", lockAtLeastFor = "1s")
 	public void executeDailySweep() {
-		log.info("Iniciando varredura do Scheduler...");
+		log.info("📋 [RENEWAL] Iniciando varredura de renovações...");
 		LocalDateTime now = LocalDateTime.now();
-
-		transactionTemplate.executeWithoutResult(txStatus -> {
-			List<Object[]> expiring = repository.findExpiringSubscriptionIds(now);
-			int expiredCount = repository.expireCanceledSubscriptions(now);
-			if (expiredCount > 0) {
-				log.info("🗓️ [SWEEP] {} assinatura(s) expirada(s) movida(s) para INACTIVE.", expiredCount);
-				expiring.forEach(row -> {
-					UUID subId            = (UUID) row[0];
-					UUID userId           = (UUID) row[1];
-					Plan plan             = (Plan) row[2];
-					LocalDateTime start   = (LocalDateTime) row[3];
-					LocalDateTime expires = (LocalDateTime) row[4];
-					log.info("🔕 [SWEEP] Sub {} (user {}, plano {}) → INACTIVE. Expirou em {}.",
-						subId, userId, plan, expires);
-					eventPublisher.publishEvent(new SubscriptionUpdatedEvent(
-						subId, userId, SubscriptionStatus.INACTIVE, plan, start, expires, false));
-				});
-			}
-		});
-
 		processPendingRenewals(now);
-		log.info("Varredura concluída.");
+		log.info("📋 [RENEWAL] Varredura de renovações concluída.");
 	}
 
 	private void processPendingRenewals(LocalDateTime now) {

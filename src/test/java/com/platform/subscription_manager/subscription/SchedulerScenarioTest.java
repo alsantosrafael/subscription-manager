@@ -146,7 +146,7 @@ class SchedulerScenarioTest {
 
         // 4. Third failure — SUSPEND
         @Test
-        @DisplayName("4. Third failure — SUSPENDED atomically, no increment")
+        @DisplayName("4. Third failure — SUSPENDED atomically, event has status=SUSPENDED and autoRenew=false")
         void thirdFailure_suspends() {
             LocalDateTime expiring = LocalDateTime.now().minusDays(1);
             Subscription sub = buildSub(expiring, 2); // 2 prior failures
@@ -158,6 +158,14 @@ class SchedulerScenarioTest {
 
             verify(repository).suspendSubscriptionAtomic(eq(sub.getId()), eq(expiring), any(), anyInt());
             verify(repository, never()).incrementFailureAtomic(any(), any(), any(), any(), anyInt());
+            ArgumentCaptor<SubscriptionUpdatedEvent> captor =
+                    ArgumentCaptor.forClass(SubscriptionUpdatedEvent.class);
+            verify(eventPublisher).publishEvent(captor.capture());
+            SubscriptionUpdatedEvent evt = captor.getValue();
+            assertEquals(SubscriptionStatus.SUSPENDED, evt.status(),
+                    "Cache event must reflect SUSPENDED so Redis entry is immediately consistent");
+            assertEquals(false, evt.autoRenew(),
+                    "autoRenew must be false — suspended subscription must not trigger renewal sweep");
         }
 
         // 7. Stale event
@@ -225,28 +233,25 @@ class SchedulerScenarioTest {
             ReflectionTestUtils.setField(orchestrator, "inFlightGuardMinutes", INFLIGHT_GUARD);
         }
 
-        // 5-6. Expiry sweep covers both ACTIVE-canceled and SUSPENDED
+        // 5-6. Expiry responsibility moved to SubscriptionExpiryService
         @Test
-        @DisplayName("5-6. expireCanceledSubscriptions is always called — covers CANCELED and SUSPENDED")
-        void expirySweep_alwaysDelegates() {
-            doAnswer(inv -> { ((java.util.function.Consumer<?>) inv.getArgument(0)).accept(null); return null; })
-                .when(transactionTemplate).executeWithoutResult(any());
+        @DisplayName("5-6. Renewal sweep does not touch expiry repository methods (moved to SubscriptionExpiryService)")
+        void renewalSweep_doesNotCallExpiry() {
             when(repository.findEligibleForRenewal(any(), any(), anyInt(), any()))
-                .thenReturn(new SliceImpl<>(List.of()));
+                    .thenReturn(new SliceImpl<>(List.of()));
 
             orchestrator.executeDailySweep();
 
-            verify(repository).expireCanceledSubscriptions(any());
+            verify(repository, never()).expireCanceledSubscriptionsByIds(any());
+            verify(repository, never()).findExpiringSubscriptionIds(any(), any());
         }
 
         // 9-10. No eligible subscriptions
         @Test
         @DisplayName("9-10. Empty result — sweep dispatches no events (nextRetryAt in future OR max attempts)")
         void noEligibleSubscriptions_isNoop() {
-            doAnswer(inv -> { ((java.util.function.Consumer<?>) inv.getArgument(0)).accept(null); return null; })
-                .when(transactionTemplate).executeWithoutResult(any());
             when(repository.findEligibleForRenewal(any(), any(), anyInt(), any()))
-                .thenReturn(new SliceImpl<>(List.of()));
+                    .thenReturn(new SliceImpl<>(List.of()));
 
             orchestrator.executeDailySweep();
 

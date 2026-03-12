@@ -95,7 +95,7 @@ STATUS=$(status_of "$RAW")
 RAW=$(curl -s -w "\n%{http_code}" "${BASE_URL}/v1/subscriptions/${SUB_ID}" -H "X-User-Id: ${USER_ID}")
 BODY=$(body_of "$RAW")
 CANCEL_STATUS=$(echo "$BODY" | jq -r '.status // empty')
-AUTO_RENEW=$(echo "$BODY"   | jq -r '.autoRenew // empty')
+AUTO_RENEW=$(echo "$BODY"   | jq -r '.autoRenew | tostring')
 
 if [[ "$CANCEL_STATUS" == "CANCELED" && "$AUTO_RENEW" == "false" ]]; then
   pass "Subscription is CANCELED with autoRenew=false"
