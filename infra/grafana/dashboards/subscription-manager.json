@@ -1,0 +1,82 @@
+{
+  "id": null,
+  "uid": "subscription-manager",
+  "title": "Subscription Manager — JVM + Kafka",
+  "tags": ["jvm", "kafka", "prometheus"],
+  "timezone": "browser",
+  "schemaVersion": 36,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "graph",
+      "title": "JVM Heap Usage (%)",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "100 * (jvm_memory_bytes_used{area=\"heap\"} / jvm_memory_bytes_max{area=\"heap\"})", "legendFormat": "heap_percent" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "graph",
+      "title": "JVM GC Pause — p95 (ms)",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(jvm_gc_pause_seconds_bucket[5m])) by (le)) * 1000", "legendFormat": "gc_p95_ms" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "JVM Threads (live)",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "jvm_threads_live", "legendFormat": "threads" }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Process CPU (%)",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "100 * rate(process_cpu_seconds_total[1m])", "legendFormat": "cpu_percent" }
+      ],
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 }
+    },
+    {
+      "id": 5,
+      "type": "graph",
+      "title": "Kafka Consumer Lag (partitions)",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(kafka_consumergroup_lag)", "legendFormat": "consumer_lag_total" },
+        { "expr": "sum(kafka_consumergroup_lag) by (group)", "legendFormat": "lag_by_group" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 }
+    },
+    {
+      "id": 6,
+      "type": "graph",
+      "title": "Kafka Throughput (messages/sec)",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(rate(kafka_server_brokertopicmetrics_messages_in_total[1m]))", "legendFormat": "msgs_per_sec_total" },
+        { "expr": "sum(rate(kafka_server_brokertopicmetrics_messages_in_total[1m])) by (topic)", "legendFormat": "msgs_per_sec_by_topic" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 }
+    }
+  ],
+  "schema": 0,
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "timepicker": {},
+  "refreshInterval": "10s"
+}
+
+

@@ -3,4 +3,8 @@ scrape_configs:
     metrics_path: '/actuator/prometheus'
     scrape_interval: 5s
     static_configs:
-      - targets: ['host.docker.internal:8080']
+      - targets: ['host.docker.internal:8080', 'subscription-manager:8080']
+  - job_name: 'kafka_exporter'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['kafka_exporter:9308']

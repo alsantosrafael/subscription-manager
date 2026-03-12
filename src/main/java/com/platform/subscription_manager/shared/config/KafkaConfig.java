@@ -27,6 +27,16 @@
 		@Value("${spring.kafka.consumer.auto-offset-reset:latest}")
 		private String offsetReset;
 
+		@Value("${spring.kafka.properties.request.timeout.ms:60000}")
+		private int requestTimeoutMs;
+
+		@Value("${spring.kafka.producer.delivery.timeout.ms:120000}")
+		private int producerDeliveryTimeoutMs;
+
+		@Value("${spring.kafka.producer.retries:5}")
+		private int producerRetries;
+
+
 		@Bean
 		public KafkaTemplate<Object, Object> kafkaTemplate() {
 			Map<String, Object> props = new HashMap<>();
@@ -40,6 +50,10 @@
 			props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "snappy");
 			props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
 			props.put(ProducerConfig.ACKS_CONFIG, "all");
+
+			props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, producerDeliveryTimeoutMs);
+			props.put(ProducerConfig.RETRIES_CONFIG, producerRetries);
+			props.put("request.timeout.ms", requestTimeoutMs);
 
 			return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(props));
 		}
@@ -59,6 +73,9 @@
 			props.put(ConsumerConfig.FETCH_MIN_BYTES_CONFIG, 1_024);
 			props.put(ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, 500);
 			props.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, 300_000);
+
+			// Consumer-side request timeout (applies to metadata/fetch request timeouts)
+			props.put("request.timeout.ms", requestTimeoutMs);
 
 			return new DefaultKafkaConsumerFactory<>(props);
 		}
