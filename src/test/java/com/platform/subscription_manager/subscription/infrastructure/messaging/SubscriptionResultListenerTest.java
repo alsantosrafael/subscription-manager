@@ -141,12 +141,11 @@ class SubscriptionResultListenerTest {
 
             when(repository.findById(sub.getId()))
                 .thenReturn(Optional.of(sub));
-            when(repository.incrementFailureAtomic(any(), any(), any(), any(), anyInt())).thenReturn(1);
+            when(repository.incrementFailureAtomic(any(), any(), any(), anyInt())).thenReturn(1);
 
             processRecord(event);
 
-            // Must use atomic increment, never save()
-            verify(repository).incrementFailureAtomic(eq(sub.getId()), eq(expiring), any(), any(), anyInt());
+            verify(repository).incrementFailureAtomic(eq(sub.getId()), eq(expiring), any(), anyInt());
             verify(repository, never()).save(any());
         }
 
@@ -154,7 +153,6 @@ class SubscriptionResultListenerTest {
         @DisplayName("Third failure (maxAttempts reached) calls suspendSubscriptionAtomic — NOT repository.save()")
         void thirdFailureSuspendsAtomically() {
             LocalDateTime expiring = LocalDateTime.now().minusDays(1);
-            // billingAttempts=2, so attemptsAfter=3 >= maxAttempts(3) → suspend
             Subscription sub = buildSub(expiring, 2);
 
             BillingResultEvent event = new BillingResultEvent(
@@ -162,12 +160,12 @@ class SubscriptionResultListenerTest {
 
             when(repository.findById(sub.getId()))
                 .thenReturn(Optional.of(sub));
-            when(repository.suspendSubscriptionAtomic(any(), any(), any(), anyInt())).thenReturn(1);
+            when(repository.suspendSubscriptionAtomic(any(), any(), anyInt())).thenReturn(1);
 
             processRecord(event);
 
-            verify(repository).suspendSubscriptionAtomic(eq(sub.getId()), eq(expiring), any(), anyInt());
-            verify(repository, never()).incrementFailureAtomic(any(), any(), any(), any(), anyInt());
+            verify(repository).suspendSubscriptionAtomic(eq(sub.getId()), eq(expiring), anyInt());
+            verify(repository, never()).incrementFailureAtomic(any(), any(), any(), anyInt());
             verify(repository, never()).save(any());
         }
 
@@ -181,12 +179,12 @@ class SubscriptionResultListenerTest {
                 sub.getId(), null, BillingHistoryStatus.FAILED, expiring, "card declined");
 
             when(repository.findById(sub.getId())).thenReturn(Optional.of(sub));
-            when(repository.incrementFailureAtomic(any(), any(), any(), any(), anyInt())).thenReturn(1);
+            when(repository.incrementFailureAtomic(any(), any(), any(), anyInt())).thenReturn(1);
 
             processRecord(event);
 
             ArgumentCaptor<LocalDateTime> nextRetryCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
-            verify(repository).incrementFailureAtomic(any(), any(), any(), nextRetryCaptor.capture(), anyInt());
+            verify(repository).incrementFailureAtomic(any(), any(), nextRetryCaptor.capture(), anyInt());
             assertTrue(nextRetryCaptor.getValue().isAfter(LocalDateTime.now()),
                 "nextRetryAt must be in the future so the sweep will not immediately re-dispatch");
         }
@@ -205,8 +203,8 @@ class SubscriptionResultListenerTest {
 
             processRecord(event);
 
-            verify(repository, never()).incrementFailureAtomic(any(), any(), any(), any(), anyInt());
-            verify(repository, never()).suspendSubscriptionAtomic(any(), any(), any(), anyInt());
+            verify(repository, never()).incrementFailureAtomic(any(), any(), any(), anyInt());
+            verify(repository, never()).suspendSubscriptionAtomic(any(), any(), anyInt());
             verify(repository, never()).save(any());
         }
 
@@ -220,7 +218,7 @@ class SubscriptionResultListenerTest {
                 sub.getId(), null, BillingHistoryStatus.FAILED, expiring, "card declined");
 
             when(repository.findById(sub.getId())).thenReturn(Optional.of(sub));
-            when(repository.incrementFailureAtomic(any(), any(), any(), any(), anyInt())).thenReturn(1);
+            when(repository.incrementFailureAtomic(any(), any(), any(), anyInt())).thenReturn(1);
 
             processRecord(event);
 

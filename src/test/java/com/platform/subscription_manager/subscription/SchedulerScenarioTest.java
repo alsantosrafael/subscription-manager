@@ -9,6 +9,7 @@ import com.platform.subscription_manager.shared.infrastructure.messaging.Subscri
 import com.platform.subscription_manager.subscription.application.services.RenewalOrchestratorService;
 import com.platform.subscription_manager.subscription.domain.BillingCyclePolicy;
 import com.platform.subscription_manager.subscription.domain.entity.Subscription;
+import com.platform.subscription_manager.subscription.domain.projections.EligibleRenewalRow;
 import com.platform.subscription_manager.subscription.domain.repositories.SubscriptionRepository;
 import com.platform.subscription_manager.subscription.infrastructure.messaging.SubscriptionResultListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -33,7 +34,6 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -115,13 +115,13 @@ class SchedulerScenarioTest {
             Subscription sub = buildSub(expiring, 0);
 
             when(repository.findById(sub.getId())).thenReturn(Optional.of(sub));
-            when(repository.incrementFailureAtomic(eq(sub.getId()), eq(expiring), any(), any(), anyInt())).thenReturn(1);
+            when(repository.incrementFailureAtomic(eq(sub.getId()), eq(expiring), any(), anyInt())).thenReturn(1);
 
             send(listener, sub.getId(), BillingHistoryStatus.FAILED, expiring, null);
 
             ArgumentCaptor<LocalDateTime> retryCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
-            verify(repository).incrementFailureAtomic(eq(sub.getId()), eq(expiring), any(), retryCaptor.capture(), anyInt());
-            verify(repository, never()).suspendSubscriptionAtomic(any(), any(), any(), anyInt());
+            verify(repository).incrementFailureAtomic(eq(sub.getId()), eq(expiring), retryCaptor.capture(), anyInt());
+            verify(repository, never()).suspendSubscriptionAtomic(any(), any(), anyInt());
             assertTrue(retryCaptor.getValue().isAfter(LocalDateTime.now()));
         }
 
@@ -133,14 +133,14 @@ class SchedulerScenarioTest {
             Subscription sub = buildSub(expiring, 1); // 1 prior failure
 
             when(repository.findById(sub.getId())).thenReturn(Optional.of(sub));
-            when(repository.incrementFailureAtomic(eq(sub.getId()), eq(expiring), any(), any(), anyInt())).thenReturn(1);
+            when(repository.incrementFailureAtomic(eq(sub.getId()), eq(expiring), any(), anyInt())).thenReturn(1);
 
             LocalDateTime before = LocalDateTime.now();
             send(listener, sub.getId(), BillingHistoryStatus.FAILED, expiring, null);
 
             ArgumentCaptor<LocalDateTime> retryCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
-            verify(repository).incrementFailureAtomic(eq(sub.getId()), eq(expiring), any(), retryCaptor.capture(), anyInt());
-            verify(repository, never()).suspendSubscriptionAtomic(any(), any(), any(), anyInt());
+            verify(repository).incrementFailureAtomic(eq(sub.getId()), eq(expiring), retryCaptor.capture(), anyInt());
+            verify(repository, never()).suspendSubscriptionAtomic(any(), any(), anyInt());
             assertTrue(retryCaptor.getValue().isAfter(before.plusMinutes(3)));
         }
 
@@ -152,12 +152,12 @@ class SchedulerScenarioTest {
             Subscription sub = buildSub(expiring, 2); // 2 prior failures
 
             when(repository.findById(sub.getId())).thenReturn(Optional.of(sub));
-            when(repository.suspendSubscriptionAtomic(eq(sub.getId()), eq(expiring), any(), anyInt())).thenReturn(1);
+            when(repository.suspendSubscriptionAtomic(eq(sub.getId()), eq(expiring), anyInt())).thenReturn(1);
 
             send(listener, sub.getId(), BillingHistoryStatus.FAILED, expiring, null);
 
-            verify(repository).suspendSubscriptionAtomic(eq(sub.getId()), eq(expiring), any(), anyInt());
-            verify(repository, never()).incrementFailureAtomic(any(), any(), any(), any(), anyInt());
+            verify(repository).suspendSubscriptionAtomic(eq(sub.getId()), eq(expiring), anyInt());
+            verify(repository, never()).incrementFailureAtomic(any(), any(), any(), anyInt());
             ArgumentCaptor<SubscriptionUpdatedEvent> captor =
                     ArgumentCaptor.forClass(SubscriptionUpdatedEvent.class);
             verify(eventPublisher).publishEvent(captor.capture());
@@ -179,8 +179,8 @@ class SchedulerScenarioTest {
             send(listener, sub.getId(), BillingHistoryStatus.SUCCESS, LocalDateTime.now().minusDays(1), "late");
 
             verify(repository, never()).renewSubscriptionAtomic(any(), any(), any());
-            verify(repository, never()).incrementFailureAtomic(any(), any(), any(), any(), anyInt());
-            verify(repository, never()).suspendSubscriptionAtomic(any(), any(), any(), anyInt());
+            verify(repository, never()).incrementFailureAtomic(any(), any(), any(), anyInt());
+            verify(repository, never()).suspendSubscriptionAtomic(any(), any(), anyInt());
             verify(eventPublisher, never()).publishEvent(any());
         }
 
@@ -237,20 +237,20 @@ class SchedulerScenarioTest {
         @Test
         @DisplayName("5-6. Renewal sweep does not touch expiry repository methods (moved to SubscriptionExpiryService)")
         void renewalSweep_doesNotCallExpiry() {
-            when(repository.findEligibleForRenewal(any(), any(), anyInt(), any()))
+            when(repository.findEligibleForRenewal(any(), anyInt(), any()))
                     .thenReturn(new SliceImpl<>(List.of()));
 
             orchestrator.executeDailySweep();
 
             verify(repository, never()).expireCanceledSubscriptionsByIds(any());
-            verify(repository, never()).findExpiringSubscriptionIds(any(), any());
+            verify(repository, never()).findExpiringSubscriptionIds(any());
         }
 
         // 9-10. No eligible subscriptions
         @Test
         @DisplayName("9-10. Empty result — sweep dispatches no events (nextRetryAt in future OR max attempts)")
         void noEligibleSubscriptions_isNoop() {
-            when(repository.findEligibleForRenewal(any(), any(), anyInt(), any()))
+            when(repository.findEligibleForRenewal(any(), anyInt(), any()))
                     .thenReturn(new SliceImpl<>(List.of()));
 
             orchestrator.executeDailySweep();
@@ -264,30 +264,24 @@ class SchedulerScenarioTest {
         @DisplayName("11. Sweep stamps nextRetryAt = now + inFlightGuard before dispatching")
         void sweepStampsInFlightGuard() {
             UUID id = UUID.randomUUID();
-            Subscription sub = buildDueSub(id);
+            EligibleRenewalRow row = new EligibleRenewalRow(
+                id, UUID.randomUUID(), Plan.PREMIUM, LocalDateTime.now().minusDays(1), 0);
             LocalDateTime before = LocalDateTime.now();
 
-            when(repository.findEligibleForRenewal(any(), any(), anyInt(), any()))
-                .thenReturn(new SliceImpl<>(List.of(id), Pageable.ofSize(500), false))
+            when(repository.findEligibleForRenewal(any(), anyInt(), any()))
+                .thenReturn(new SliceImpl<>(List.of(row), Pageable.ofSize(500), false))
                 .thenReturn(new SliceImpl<>(List.of()));
-            when(repository.findById(id)).thenReturn(Optional.of(sub));
+            when(repository.markBillingAttemptAtomic(eq(id), anyInt(), any())).thenReturn(1);
             doAnswer(inv -> { ((java.util.function.Consumer<?>) inv.getArgument(0)).accept(null); return null; })
                 .when(transactionTemplate).executeWithoutResult(any());
 
             orchestrator.executeDailySweep();
 
-            assertNotNull(sub.getNextRetryAt());
-            assertTrue(sub.getNextRetryAt().isAfter(before.plusMinutes(INFLIGHT_GUARD).minusSeconds(2)));
-            assertTrue(sub.getNextRetryAt().isBefore(before.plusMinutes(INFLIGHT_GUARD).plusSeconds(5)));
-            assertEquals(0, sub.getBillingAttempts());
-        }
-
-        private Subscription buildDueSub(UUID id) {
-            Subscription sub = Subscription.create(UUID.randomUUID(), Plan.PREMIUM, "tok");
-            ReflectionTestUtils.setField(sub, "id",           id);
-            ReflectionTestUtils.setField(sub, "expiringDate", LocalDateTime.now().minusDays(1));
-            ReflectionTestUtils.setField(sub, "nextRetryAt",  LocalDateTime.now().minusDays(1));
-            return sub;
+            ArgumentCaptor<LocalDateTime> nextRetryCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
+            verify(repository).markBillingAttemptAtomic(eq(id), anyInt(), nextRetryCaptor.capture());
+            LocalDateTime nextRetryAt = nextRetryCaptor.getValue();
+            assertTrue(nextRetryAt.isAfter(before.plusMinutes(INFLIGHT_GUARD).minusSeconds(2)));
+            assertTrue(nextRetryAt.isBefore(before.plusMinutes(INFLIGHT_GUARD).plusSeconds(5)));
         }
     }
 

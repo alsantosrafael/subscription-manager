@@ -33,8 +33,8 @@ public interface BillingHistoryRepository extends JpaRepository<BillingHistory, 
 		UPDATE BillingHistory b
 		SET b.status = :status,
 			b.gatewayTransactionId = :txId,
-			b.processedAt = :now
+			b.processedAt = CURRENT_TIMESTAMP
 		WHERE b.idempotencyKey = :key AND b.status = com.platform.subscription_manager.shared.domain.BillingHistoryStatus.PENDING
 	""")
-	int updateResult(@Param("key") String key, @Param("status") BillingHistoryStatus status, @Param("txId") String txId, @Param("now") java.time.LocalDateTime now);
+	int updateResult(@Param("key") String key, @Param("status") BillingHistoryStatus status, @Param("txId") String txId);
 }

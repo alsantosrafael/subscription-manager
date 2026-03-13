@@ -14,6 +14,8 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.annotation.Profile;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,13 +24,13 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 @RestController
 @RequestMapping("/v1/admin")
+@Profile("local")
 @Tag(name = "Admin", description = """
 	Endpoints de operação e observabilidade.
 	Permitem acionar o scheduler manualmente, inspecionar o estado de todas as assinaturas
@@ -97,7 +99,7 @@ public class AdminBillingController {
 	@PostMapping("/billing/trigger-expiry-sweep")
 	public ResponseEntity<Map<String, Object>> triggerExpirySweep() {
 		log.info("⚙️ Gatilho manual de expiração acionado via API Administrativa.");
-		int expired = expiryService.expireCanceledSubscriptions(LocalDateTime.now());
+		int expired = expiryService.expireCanceledSubscriptions();
 		return ResponseEntity.accepted().body(Map.of(
 			"expiredToInactive", expired,
 			"message", expired > 0
@@ -149,13 +151,15 @@ public class AdminBillingController {
 		return subscriptionRepository.findById(id)
 			.filter(sub -> sub.getStatus() == SubscriptionStatus.ACTIVE)
 			.map(sub -> {
+				// int[] capture: lambda 'return' only exits the lambda, not the outer .map() block.
+				int[] updatedRef = {0};
 				transactionTemplate.executeWithoutResult(status -> {
 					int updated = subscriptionRepository.suspendSubscriptionAtomic(
 						sub.getId(),
 						sub.getExpiringDate(),
-						LocalDateTime.now(),
 						sub.getBillingAttempts()
 					);
+					updatedRef[0] = updated;
 					if (updated > 0) {
 						log.info("🔧 [ADMIN] Assinatura {} forçada para SUSPENDED via API admin.", id);
 						eventPublisher.publishEvent(new SubscriptionUpdatedEvent(
@@ -164,6 +168,13 @@ public class AdminBillingController {
 						));
 					}
 				});
+				if (updatedRef[0] == 0) {
+					// CAS miss: billingAttempts or status changed between findById and the UPDATE.
+					// The subscription was not suspended by this request — return 409 so the caller
+					// knows to re-fetch state instead of assuming success.
+					log.warn("🔄 [ADMIN] force-suspend: CAS miss for sub {} — state changed concurrently. Returning 409.", id);
+					return ResponseEntity.status(HttpStatus.CONFLICT).<Void>build();
+				}
 				return ResponseEntity.noContent().<Void>build();
 			})
 			.orElse(ResponseEntity.notFound().build());

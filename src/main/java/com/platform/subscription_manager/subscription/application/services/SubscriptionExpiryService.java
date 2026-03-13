@@ -14,7 +14,6 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -51,30 +50,35 @@ public class SubscriptionExpiryService {
 	@SchedulerLock(name = "expirySweepTask", lockAtMostFor = "55s", lockAtLeastFor = "1s")
 	public void runExpirySweep() {
 		log.info("🗓️ [EXPIRY] Iniciando varredura de expiração...");
-		int total = expireCanceledSubscriptions(LocalDateTime.now());
+		int total = expireCanceledSubscriptions();
 		log.info("🗓️ [EXPIRY] {} assinatura(s) movida(s) para INACTIVE neste ciclo.", total);
 		log.info("🗓️ [EXPIRY] Varredura concluída.");
 	}
 
 	/**
 	 * Core loop — public so the admin controller can trigger it on-demand and read the count.
-	 * Unit tests can also drive it directly without going through the scheduler annotation.
+	 * Eligibility is evaluated by DB clock (CURRENT_TIMESTAMP in the query) — no JVM time param.
 	 *
 	 * @return total number of rows transitioned to INACTIVE in this run
 	 */
-	public int expireCanceledSubscriptions(LocalDateTime now) {
+	public int expireCanceledSubscriptions() {
 		int totalExpired = 0;
 		int batchCount;
 		do {
 			Integer result = transactionTemplate.execute(txStatus -> {
 				Slice<ExpiringSubscriptionRow> slice = repository.findExpiringSubscriptionIds(
-						now, PageRequest.of(0, BATCH_SIZE));
+						PageRequest.of(0, BATCH_SIZE));
 
 				List<ExpiringSubscriptionRow> rows = slice.getContent();
 				if (rows.isEmpty()) return 0;
 
 				List<UUID> ids = rows.stream().map(ExpiringSubscriptionRow::id).toList();
 				int updated = repository.expireCanceledSubscriptionsByIds(ids);
+
+				if (updated < rows.size()) {
+					log.warn("🔄 [EXPIRY] Concurrent update detected: queried {} rows but only {} were moved to INACTIVE. " +
+						"Another sweep ran concurrently — safe to continue.", rows.size(), updated);
+				}
 
 				if (updated > 0) {
 					rows.forEach(this::publishExpiryEvent);
