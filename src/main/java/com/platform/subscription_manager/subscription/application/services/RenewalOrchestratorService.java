@@ -3,7 +3,7 @@ package com.platform.subscription_manager.subscription.application.services;
 
 import com.platform.subscription_manager.shared.domain.SubscriptionStatus;
 import com.platform.subscription_manager.shared.infrastructure.messaging.RenewalRequestedEvent;
-import com.platform.subscription_manager.subscription.domain.entity.Subscription;
+import com.platform.subscription_manager.subscription.domain.projections.EligibleRenewalRow;
 import com.platform.subscription_manager.subscription.domain.repositories.SubscriptionRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
@@ -19,7 +19,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
-import java.util.UUID;
 
 @Service
 public class RenewalOrchestratorService {
@@ -42,57 +41,70 @@ public class RenewalOrchestratorService {
 		this.transactionTemplate = transactionTemplate;
 	}
 
+	/**
+	 * ShedLock is the first line of defense — prevents redundant work across pods in the
+	 * normal case. {@code markBillingAttemptAtomic} is the second line — a CAS guard that
+	 * guarantees correctness even if the lock is briefly bypassed (defense in depth).
+	 * All time comparisons use DB clock (CURRENT_TIMESTAMP), consistent with ShedLockConfig.usingDbTime().
+	 */
 	@Scheduled(cron = "0 * * * * *")
 	@SchedulerLock(name = "renewalSweepTask", lockAtMostFor = "55s", lockAtLeastFor = "1s")
 	public void executeDailySweep() {
 		log.info("📋 [RENEWAL] Iniciando varredura de renovações...");
-		LocalDateTime now = LocalDateTime.now();
-		processPendingRenewals(now);
+		processPendingRenewals();
 		log.info("📋 [RENEWAL] Varredura de renovações concluída.");
 	}
 
-	private void processPendingRenewals(LocalDateTime now) {
-		LocalDateTime truncatedNow = now.truncatedTo(ChronoUnit.MICROS);
-		Slice<UUID> slice;
+	private void processPendingRenewals() {
+		Slice<EligibleRenewalRow> slice;
 		int page = 0;
 		int totalDispatched = 0;
 		do {
 			slice = repository.findEligibleForRenewal(
 				SubscriptionStatus.ACTIVE,
-				truncatedNow,
 				maxAttempts,
 				PageRequest.of(page, 500)
 			);
 
-			List<UUID> eligible = slice.getContent();
-			if (eligible.isEmpty()) {
-				break;
-			}
+			List<EligibleRenewalRow> eligible = slice.getContent();
+			if (eligible.isEmpty()) break;
 
 			log.info("📋 [RENEWAL] Processando página {} com {} subscrições elegíveis.", page, eligible.size());
 
-			for (UUID id : eligible) {
+			for (EligibleRenewalRow row : eligible) {
+				// int[] used as a mutable capture: lambda 'return' only exits the lambda,
+				// so we need a side-channel to know whether the CAS actually claimed the row.
+				int[] claimedRef = {0};
 				try {
+					LocalDateTime nextRetryAt = LocalDateTime.now()
+						.truncatedTo(ChronoUnit.MICROS)
+						.plusMinutes(inFlightGuardMinutes);
+
 					transactionTemplate.executeWithoutResult(status -> {
-						Subscription managed = repository.findById(id)
-							.orElseThrow(() -> new IllegalStateException("Sub não encontrada durante renovação: " + id));
+						int claimed = repository.markBillingAttemptAtomic(
+							row.id(), row.billingAttempts(), nextRetryAt);
 
-						managed.markBillingAttempt(inFlightGuardMinutes);
-						repository.save(managed);
+						if (claimed == 0) {
+							log.debug("⏭️ [RENEWAL] Sub {} já reivindicada por outro pod — pulando.", row.id());
+							return;
+						}
 
+						claimedRef[0] = 1;
 						log.info("📤 [RENEWAL] Sub {} (user {}, plano {}) despachada para cobrança. Tentativa {}.",
-							managed.getId(), managed.getUserId(), managed.getPlan(), managed.getBillingAttempts());
+							row.id(), row.userId(), row.plan(), row.billingAttempts());
 
 						eventPublisher.publishEvent(new RenewalRequestedEvent(
-							managed.getId(),
-							managed.getPlan(),
-							managed.getExpiringDate(),
-							managed.getBillingAttempts()
+							row.id(),
+							row.plan(),
+							row.expiringDate(),
+							row.billingAttempts()
 						));
 					});
-					totalDispatched++;
 				} catch (Exception e) {
-					log.error("Erro ao despachar renovação para sub {}: {}", id, e.getMessage());
+					log.error("Erro ao despachar renovação para sub {}: {}", row.id(), e.getMessage());
+				}
+				if (claimedRef[0] == 1) {
+					totalDispatched++;
 				}
 			}
 

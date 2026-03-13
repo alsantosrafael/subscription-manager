@@ -20,14 +20,11 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
 
 @Component
 public class BillingWorker {
 
 	private static final Logger log = LoggerFactory.getLogger(BillingWorker.class);
-	private static final String RESULTS_TOPIC = "subscription.billing-results";
 
 	private final BillingHistoryRepository billingRepository;
 	private final PaymentGatewayClient paymentGatewayClient;
@@ -115,8 +112,7 @@ public class BillingWorker {
 			log.warn("💳 [GATEWAY] Cobrança recusada logicamente para key {}. Motivo: {}", key, e.getMessage());
 			PaymentGatewayClient.GatewayResponse declined = e.getResponse();
 			transactionTemplate.executeWithoutResult(status -> {
-				LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
-				billingRepository.updateResult(key, BillingHistoryStatus.FAILED, declined.transactionId(), now);
+				billingRepository.updateResult(key, BillingHistoryStatus.FAILED, declined.transactionId());
 				eventPublisher.publishEvent(new BillingResultEvent(event.subscriptionId(), declined.transactionId(),
 						BillingHistoryStatus.FAILED, event.expiringDate(), declined.errorMessage()));
 			});
@@ -125,8 +121,7 @@ public class BillingWorker {
 		} catch (Exception e) {
 			log.warn("⚠️ O Gateway falhou para a key {}. Registrando falha para não envenenar a idempotência.", key);
 			transactionTemplate.executeWithoutResult(status -> {
-				LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
-				billingRepository.updateResult(key, BillingHistoryStatus.FAILED, null, now);
+				billingRepository.updateResult(key, BillingHistoryStatus.FAILED, null);
 				eventPublisher.publishEvent(new BillingResultEvent(event.subscriptionId(), null, BillingHistoryStatus.FAILED,
 						event.expiringDate(), "Falha de comunicação com Gateway"));
 			});
@@ -135,8 +130,7 @@ public class BillingWorker {
 		}
 
 		transactionTemplate.executeWithoutResult(status -> {
-			LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
-			billingRepository.updateResult(key, BillingHistoryStatus.SUCCESS, response.transactionId(), now);
+			billingRepository.updateResult(key, BillingHistoryStatus.SUCCESS, response.transactionId());
 			eventPublisher.publishEvent(new BillingResultEvent(event.subscriptionId(), response.transactionId(),
 					BillingHistoryStatus.SUCCESS, event.expiringDate(), null));
 		});

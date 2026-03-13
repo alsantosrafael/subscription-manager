@@ -60,10 +60,10 @@ class SubscriptionExpiryServiceTest {
         @Test
         @DisplayName("Returns 0 and issues no DB writes when no subscriptions are expired")
         void emptyResult_isNoop() {
-            when(repository.findExpiringSubscriptionIds(any(), any()))
+            when(repository.findExpiringSubscriptionIds(any()))
                     .thenReturn(new SliceImpl<>(List.of()));
 
-            int result = service.expireCanceledSubscriptions(LocalDateTime.now());
+            int result = service.expireCanceledSubscriptions();
 
             assertEquals(0, result);
             verify(repository, never()).expireCanceledSubscriptionsByIds(any());
@@ -76,12 +76,12 @@ class SubscriptionExpiryServiceTest {
             ExpiringSubscriptionRow row = buildRow();
             UUID expectedId = row.id();
 
-            when(repository.findExpiringSubscriptionIds(any(), any()))
+            when(repository.findExpiringSubscriptionIds(any()))
                     .thenReturn(new SliceImpl<>(List.of(row), Pageable.ofSize(500), false))
                     .thenReturn(new SliceImpl<>(List.of()));
             when(repository.expireCanceledSubscriptionsByIds(any())).thenReturn(1);
 
-            int result = service.expireCanceledSubscriptions(LocalDateTime.now());
+            int result = service.expireCanceledSubscriptions();
 
             assertEquals(1, result);
 
@@ -99,13 +99,13 @@ class SubscriptionExpiryServiceTest {
             ExpiringSubscriptionRow row2 = buildRow();
             ExpiringSubscriptionRow row3 = buildRow();
 
-            when(repository.findExpiringSubscriptionIds(any(), any()))
+            when(repository.findExpiringSubscriptionIds(any()))
                     .thenReturn(new SliceImpl<>(List.of(row1, row2), Pageable.ofSize(500), true))
                     .thenReturn(new SliceImpl<>(List.of(row3), Pageable.ofSize(500), false))
                     .thenReturn(new SliceImpl<>(List.of()));
             when(repository.expireCanceledSubscriptionsByIds(any())).thenReturn(2).thenReturn(1);
 
-            int result = service.expireCanceledSubscriptions(LocalDateTime.now());
+            int result = service.expireCanceledSubscriptions();
 
             assertEquals(3, result);
             verify(repository, times(2)).expireCanceledSubscriptionsByIds(any());
@@ -117,11 +117,11 @@ class SubscriptionExpiryServiceTest {
         void updateReturnsZero_loopTerminates() {
             ExpiringSubscriptionRow row = buildRow();
 
-            when(repository.findExpiringSubscriptionIds(any(), any()))
+            when(repository.findExpiringSubscriptionIds(any()))
                     .thenReturn(new SliceImpl<>(List.of(row), Pageable.ofSize(500), true));
             when(repository.expireCanceledSubscriptionsByIds(any())).thenReturn(0);
 
-            int result = service.expireCanceledSubscriptions(LocalDateTime.now());
+            int result = service.expireCanceledSubscriptions();
 
             assertEquals(0, result);
             // Only one attempt — loop stopped because batchCount == 0
@@ -139,12 +139,12 @@ class SubscriptionExpiryServiceTest {
             LocalDateTime expires = LocalDateTime.now().minusDays(1);
             ExpiringSubscriptionRow row = new ExpiringSubscriptionRow(subId, userId, plan, start, expires);
 
-            when(repository.findExpiringSubscriptionIds(any(), any()))
+            when(repository.findExpiringSubscriptionIds(any()))
                     .thenReturn(new SliceImpl<>(List.of(row), Pageable.ofSize(500), false))
                     .thenReturn(new SliceImpl<>(List.of()));
             when(repository.expireCanceledSubscriptionsByIds(any())).thenReturn(1);
 
-            service.expireCanceledSubscriptions(LocalDateTime.now());
+            service.expireCanceledSubscriptions();
 
             ArgumentCaptor<SubscriptionUpdatedEvent> captor =
                     ArgumentCaptor.forClass(SubscriptionUpdatedEvent.class);
@@ -165,15 +165,15 @@ class SubscriptionExpiryServiceTest {
         void alwaysQueriesPageZero() {
             ExpiringSubscriptionRow row = buildRow();
 
-            when(repository.findExpiringSubscriptionIds(any(), any()))
+            when(repository.findExpiringSubscriptionIds(any()))
                     .thenReturn(new SliceImpl<>(List.of(row), Pageable.ofSize(500), true))
                     .thenReturn(new SliceImpl<>(List.of()));
             when(repository.expireCanceledSubscriptionsByIds(any())).thenReturn(1);
 
-            service.expireCanceledSubscriptions(LocalDateTime.now());
+            service.expireCanceledSubscriptions();
 
             ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-            verify(repository, times(2)).findExpiringSubscriptionIds(any(), pageableCaptor.capture());
+            verify(repository, times(2)).findExpiringSubscriptionIds(pageableCaptor.capture());
             pageableCaptor.getAllValues().forEach(p ->
                     assertEquals(0, p.getPageNumber(),
                             "Must always query page 0 — updated rows leave the result set so " +
@@ -188,12 +188,12 @@ class SubscriptionExpiryServiceTest {
     @Test
     @DisplayName("runExpirySweep delegates to the paginated expiry loop")
     void runExpirySweep_delegates() {
-        when(repository.findExpiringSubscriptionIds(any(), any()))
+        when(repository.findExpiringSubscriptionIds(any()))
                 .thenReturn(new SliceImpl<>(List.of()));
 
         service.runExpirySweep();
 
-        verify(repository, atLeastOnce()).findExpiringSubscriptionIds(any(), any());
+        verify(repository, atLeastOnce()).findExpiringSubscriptionIds(any());
     }
 
     // ─────────────────────────────────────────────────────────────────────────

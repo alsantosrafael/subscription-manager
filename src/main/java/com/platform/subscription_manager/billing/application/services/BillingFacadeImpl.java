@@ -1,6 +1,7 @@
 package com.platform.subscription_manager.billing.application.services;
 
 import com.platform.subscription_manager.billing.BillingFacade;
+import com.platform.subscription_manager.billing.domain.entity.BillingHistory;
 import com.platform.subscription_manager.shared.domain.BillingHistoryStatus;
 import com.platform.subscription_manager.billing.domain.repositories.BillingHistoryRepository;
 import com.platform.subscription_manager.billing.infrastructure.web.integrations.PaymentGatewayClient;
@@ -13,7 +14,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -46,18 +46,13 @@ public class BillingFacadeImpl implements BillingFacade {
 	 */
 	@Override
 	public ChargeResult chargeForNewSubscription(UUID subscriptionId, Plan plan, String paymentToken) {
-		// Key includes subscriptionId + plan + token hash so each reactivation attempt
-		// (which may change plan or token) gets its own idempotency slot.
-		// Using paymentToken.hashCode() avoids storing the raw token in the key.
 		String idempotencyKey = subscriptionId + "-initial-" + plan.name() + "-" + Math.abs(paymentToken.hashCode());
 
 		log.info("💳 [COBRANÇA INICIAL] Iniciando cobrança para sub {} plano {}", subscriptionId, plan);
 
-		// 1. Insert PENDING — committed immediately so the gateway call runs with no open connection.
-		self.insertPending(subscriptionId, idempotencyKey);
+		int inserted = self.insertPending(subscriptionId, idempotencyKey);
 
-		// 2. If a previous committed attempt already reached a final state, return it immediately.
-		Optional<com.platform.subscription_manager.billing.domain.entity.BillingHistory> existing =
+		Optional<BillingHistory> existing =
 			billingHistoryRepository.findByIdempotencyKey(idempotencyKey);
 		if (existing.isPresent() && existing.get().getStatus() != BillingHistoryStatus.PENDING) {
 			BillingHistoryStatus finalStatus = existing.get().getStatus();
@@ -66,17 +61,19 @@ public class BillingFacadeImpl implements BillingFacade {
 			return new ChargeResult(success, existing.get().getGatewayTransactionId(), success ? null : "Tentativa anterior recusada");
 		}
 
-		// 3. Call the gateway — no open DB connection at this point.
+		if (inserted == 0) {
+			log.warn("⚠️ [COBRANÇA INICIAL] Cobrança concorrente detectada para sub {} — " +
+				"outra requisição já está processando a mesma chave. Abortando para evitar dupla cobrança.", subscriptionId);
+			return new ChargeResult(false, null, "Cobrança em andamento. Tente novamente em instantes.");
+		}
 		PaymentGatewayClient.GatewayResponse response;
 		try {
 			response = paymentGatewayClient.charge(idempotencyKey, paymentToken, plan.getPrice());
 		} catch (PaymentGatewayClient.GatewayLogicalFailureException e) {
-			// Gateway explicitly declined — card refused, fraud block, etc.
 			log.warn("❌ [COBRANÇA INICIAL] Cartão recusado para sub {}. Motivo: {}", subscriptionId, e.getMessage());
 			self.persistResult(idempotencyKey, BillingHistoryStatus.FAILED, null);
 			return new ChargeResult(false, null, e.getResponse().errorMessage());
 		} catch (RuntimeException e) {
-			// Circuit breaker open or infra failure — gateway unreachable.
 			log.warn("⚠️ [COBRANÇA INICIAL] Gateway indisponível para sub {}. Revertendo. Causa: {}", subscriptionId, e.getMessage());
 			self.persistResult(idempotencyKey, BillingHistoryStatus.FAILED, null);
 			return new ChargeResult(false, null, "Gateway de pagamentos indisponível. Tente novamente mais tarde.");
@@ -86,7 +83,6 @@ public class BillingFacadeImpl implements BillingFacade {
 			? BillingHistoryStatus.SUCCESS
 			: BillingHistoryStatus.FAILED;
 
-		// 4. Persist the final result in its own committed transaction.
 		self.persistResult(idempotencyKey, status, response.transactionId());
 
 		if (response.isSuccess()) {
@@ -102,10 +98,14 @@ public class BillingFacadeImpl implements BillingFacade {
 	 * Inserts a PENDING billing history row inside its own committed transaction.
 	 * REQUIRES_NEW guarantees the row is visible to subsequent reads even if the
 	 * calling method has no active transaction.
+	 *
+	 * @return 1 if this call inserted the row, 0 if another concurrent caller already did
+	 *         (ON CONFLICT DO NOTHING).  The caller uses this to decide whether it owns
+	 *         the gateway call — only the inserting thread should proceed.
 	 */
 	@Transactional(propagation = Propagation.REQUIRES_NEW)
-	public void insertPending(UUID subscriptionId, String idempotencyKey) {
-		billingHistoryRepository.insertIfNotExist(subscriptionId, idempotencyKey);
+	public int insertPending(UUID subscriptionId, String idempotencyKey) {
+		return billingHistoryRepository.insertIfNotExist(subscriptionId, idempotencyKey);
 	}
 
 	/**
@@ -113,8 +113,7 @@ public class BillingFacadeImpl implements BillingFacade {
 	 */
 	@Transactional(propagation = Propagation.REQUIRES_NEW)
 	public void persistResult(String idempotencyKey, BillingHistoryStatus status, String transactionId) {
-		LocalDateTime now = LocalDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
-		int updated = billingHistoryRepository.updateResult(idempotencyKey, status, transactionId, now);
+		int updated = billingHistoryRepository.updateResult(idempotencyKey, status, transactionId);
 		if (updated == 0) {
 			log.warn("[BILLING] No PENDING billing_history row found for key {}. Status {} not recorded.", idempotencyKey, status);
 		}

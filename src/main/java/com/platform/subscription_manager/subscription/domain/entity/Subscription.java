@@ -125,20 +125,6 @@ public class Subscription {
 		this.nextRetryAt = null;
 	}
 
-	/**
-	 * Stamps an in-flight guard so the sweep does not re-dispatch this subscription
-	 * while a Kafka/gateway round-trip is already in progress.
-	 * Uses a short fixed window independent of billingAttempts — exponential backoff
-	 * is computed by SubscriptionResultListener using the billing.retry.base-delay-minutes property.
-	 *
-	 * @param inFlightGuardMinutes how long to block re-dispatch (e.g. 5 minutes)
-	 */
-	public void markBillingAttempt(int inFlightGuardMinutes) {
-		LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
-		this.lastBillingAttempt = now;
-		this.nextRetryAt = now.plusMinutes(inFlightGuardMinutes);
-	}
-
 
 	/**
 	 * Mirrors exactly what renewSubscriptionAtomic writes to the DB.

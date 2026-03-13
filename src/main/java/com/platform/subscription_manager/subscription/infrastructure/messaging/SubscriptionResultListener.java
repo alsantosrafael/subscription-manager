@@ -107,7 +107,7 @@ public class SubscriptionResultListener {
 
 		int updated;
 		if (result.suspended()) {
-			updated = repository.suspendSubscriptionAtomic(sub.getId(), event.referenceExpiringDate(), now, expectedAttempts);
+			updated = repository.suspendSubscriptionAtomic(sub.getId(), event.referenceExpiringDate(), expectedAttempts);
 			if (updated > 0) {
 				sub.applyBillingFailure(result, now);
 				log.warn("🔴 [BILLING] Sub {} SUSPENSA após {} falhas consecutivas. autoRenew=false. Requer reativação manual.",
@@ -118,7 +118,7 @@ public class SubscriptionResultListener {
 					sub.getId(), expectedAttempts, event.referenceExpiringDate());
 			}
 		} else {
-			updated = repository.incrementFailureAtomic(sub.getId(), event.referenceExpiringDate(), now, result.nextRetryAt(), expectedAttempts);
+			updated = repository.incrementFailureAtomic(sub.getId(), event.referenceExpiringDate(), result.nextRetryAt(), expectedAttempts);
 			if (updated > 0) {
 				sub.applyBillingFailure(result, now);
 				log.warn("⚠️ Sub {} falhou ({} tentativa(s)). Próxima tentativa em: {}", sub.getId(), sub.getBillingAttempts(), result.nextRetryAt());

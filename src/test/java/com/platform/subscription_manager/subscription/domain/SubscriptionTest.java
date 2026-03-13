@@ -97,68 +97,6 @@ class SubscriptionTest {
 		}
 	}
 
-	@Nested
-	@DisplayName("markBillingAttempt() — in-flight guard")
-	class MarkBillingAttempt {
-
-		private static final int IN_FLIGHT_GUARD_MINUTES = 5;
-
-		@Test
-		@DisplayName("Sets nextRetryAt to now + inFlightGuardMinutes regardless of billingAttempts (attempt 0)")
-		void setsFixedGuardWindowOnFirstAttempt() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			LocalDateTime before = LocalDateTime.now();
-
-			sub.markBillingAttempt(IN_FLIGHT_GUARD_MINUTES);
-
-			LocalDateTime after = LocalDateTime.now();
-			assertNotNull(sub.getNextRetryAt());
-			assertTrue(sub.getNextRetryAt().isAfter(before.plusMinutes(IN_FLIGHT_GUARD_MINUTES).minusSeconds(2)),
-				"nextRetryAt must be at least now + 5 minutes");
-			assertTrue(sub.getNextRetryAt().isBefore(after.plusMinutes(IN_FLIGHT_GUARD_MINUTES).plusSeconds(2)),
-				"nextRetryAt must not exceed now + 5 minutes + 2s tolerance");
-		}
-
-		@Test
-		@DisplayName("Fixed guard window does NOT grow with billingAttempts — regression for exponential formula bug")
-		void guardWindowIsFixedNotExponential() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			// Inject billingAttempts = 2 directly to simulate prior failures
-			ReflectionTestUtils.setField(sub, "billingAttempts", 2);
-
-			LocalDateTime before = LocalDateTime.now();
-			sub.markBillingAttempt(IN_FLIGHT_GUARD_MINUTES);
-			LocalDateTime after = LocalDateTime.now();
-
-			// With old formula: 2^2 * 60 = 240 minutes. With the fix: always 5 minutes.
-			assertTrue(sub.getNextRetryAt().isBefore(after.plusMinutes(IN_FLIGHT_GUARD_MINUTES).plusSeconds(2)),
-				"nextRetryAt must not be 240 minutes away — guard must stay fixed at 5 minutes");
-			assertTrue(sub.getNextRetryAt().isAfter(before.plusMinutes(IN_FLIGHT_GUARD_MINUTES).minusSeconds(2)),
-				"nextRetryAt must be approximately now + 5 minutes");
-		}
-
-		@Test
-		@DisplayName("Stamps lastBillingAttempt")
-		void stampsLastBillingAttempt() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			assertNull(sub.getLastBillingAttempt());
-
-			sub.markBillingAttempt(IN_FLIGHT_GUARD_MINUTES);
-
-			assertNotNull(sub.getLastBillingAttempt());
-		}
-
-		@Test
-		@DisplayName("Does NOT increment billingAttempts — counter is owned by atomic DB queries")
-		void doesNotIncrementBillingAttempts() {
-			Subscription sub = Subscription.create(USER_ID, Plan.BASICO, TOKEN);
-			assertEquals(0, sub.getBillingAttempts());
-
-			sub.markBillingAttempt(IN_FLIGHT_GUARD_MINUTES);
-
-			assertEquals(0, sub.getBillingAttempts());
-		}
-	}
 
 	@Nested
 	@DisplayName("applyRenewal()")
