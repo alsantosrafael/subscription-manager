@@ -1,6 +1,7 @@
 package com.platform.subscription_manager.billing.infrastructure.web.integrations;
 
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -52,8 +53,8 @@ public class PaymentGatewayClient {
 			.defaultHeader("Authorization", "Bearer " + apiKey)
 			.build();
 	}
-
-	@CircuitBreaker(name = "gatewayPayment", fallbackMethod = "chargeFallback")
+	@Retry(name = "gatewayCharge")
+	@CircuitBreaker(name = "gatewayPayment")
 	public GatewayResponse charge(String idempotencyKey, String paymentToken, BigDecimal amount) {
 		long amountInCents = amount.multiply(new BigDecimal("100")).longValueExact();
 		String maskedToken = paymentToken.length() > 4
@@ -98,8 +99,4 @@ public class PaymentGatewayClient {
 		}
 	}
 
-	private GatewayResponse chargeFallback(String idempotencyKey, String paymentToken, BigDecimal amount, Throwable t) {
-		log.error("🔴 [CIRCUIT BREAKER] Gateway indisponível ou circuito aberto. Rejeitando a chamada para o Kafka retentar mais tarde. Causa: {}", t.getMessage());
-		throw new RuntimeException("Infraestrutura do Gateway de Pagamentos indisponível.", t);
-	}
 }
