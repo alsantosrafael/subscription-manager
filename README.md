@@ -1166,13 +1166,13 @@ Jitter resolve *thundering herd* quando milhares de clientes independentes acord
 
 ### 13. Updates atômicos via JPQL como última linha de defesa contra duplicatas
 **Decisão:** `renewSubscriptionAtomic` usa `UPDATE ... WHERE id = :id AND expiringDate = :currentExpiringDate`. Retorna 0 se outra thread já avançou a data — sem exception, sem log de erro, apenas descarta silenciosamente.  
-**Justificativa:** O check `expiringDate = :currentExpiringDate` funciona como CAS (Compare-And-Swap) no banco. Dois consumidores Kafka processando a mesma mensagem após rebalanceamento chegarão com a mesma `referenceExpiringDate`. O banco deixa apenas um vencer; o outro descarta. É mais eficiente que `SELECT FOR UPDATE` (sem lock de linha) e mais simples que `@Version` para este caso de operação bulk.
+**Justificativa:** O check `expiringDate = :currentExpiringDate` funciona como CAS (Compare-And-Swap) no banco. Dois consumidores Kafka processando a mesma mensagem após rebalanceamento chegarão com a mesma `referenceExpiringDate`. O banco deixa apenas um vencer; o outro descarta. É mais eficiente que `SELECT FOR UPDATE` (sem lock de linha) e dispensa locking otimista para este caso de operação bulk.
 
 ---
 
-### 14. Locking otimista na entidade Subscription
-**Decisão:** Campo `@Version Long version` na entidade `Subscription`.  
-**Justificativa:** O scheduler (`markBillingAttempt`) e o `SubscriptionResultListener` (escrita do resultado) podem tocar a mesma linha ao mesmo tempo. Sem controle de concorrência, uma escrita silencemente sobrescreveria a outra (lost update). O locking otimista detecta o conflito via `OptimisticLockException` na hora do commit, forçando o retry do contexto que perdeu — sem manter lock no banco durante o processamento.
+### 14. CAS atômico em vez de locking otimista
+**Decisão:** Toda mutação de estado em `Subscription` passa por um update JPQL com guard na cláusula `WHERE` (`renewSubscriptionAtomic`, `incrementFailureAtomic`, `suspendSubscriptionAtomic`, `expireCanceledSubscriptionsByIds`). O retorno `int` indica se a linha foi de fato alterada (1) ou já estava em outro estado (0).  
+**Justificativa:** Locking otimista detecta conflito via exception na hora do commit — o que abortaria a transação inteira do batch do `BillingWorker`. Todos os registros processados na mesma iteração seriam descartados por culpa de um conflito isolado. O CAS via `WHERE` falha silenciosamente (retorna 0) apenas para a linha conflitante, deixando o restante do batch avançar normalmente. O trade-off é que o guard precisa ser composto de campos de negócio significativos (ex: `expiringDate`, `status`, `billingAttempts`) em vez de um contador genérico — o que aqui é uma vantagem, pois o guard expressa a pré-condição de negócio diretamente na query.
 
 ---
 
