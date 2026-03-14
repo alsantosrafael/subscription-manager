@@ -6,6 +6,7 @@ import com.platform.subscription_manager.billing.infrastructure.web.integrations
 import com.platform.subscription_manager.shared.domain.PaymentTokenPort;
 import com.platform.subscription_manager.shared.infrastructure.messaging.BillingResultEvent;
 import com.platform.subscription_manager.shared.infrastructure.messaging.RenewalRequestedEvent;
+import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,9 +47,26 @@ public class BillingWorker {
 		this.paymentTokenPort = paymentTokenPort;
 	}
 
-	@KafkaListener(topics = "subscription.renewals", groupId = "billing-processor-group", batch = "true")
+	@PreDestroy
+	void shutdown() {
+		log.info("🛑 [BILLING-WORKER] Encerrando executor de Virtual Threads...");
+		executor.shutdown();
+		try {
+			if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+				log.warn("⚠️ [BILLING-WORKER] Executor não encerrou no tempo esperado. Forçando shutdown...");
+				executor.shutdownNow();
+			}
+			log.info("✅ [BILLING-WORKER] Executor encerrado com sucesso.");
+		} catch (InterruptedException e) {
+			log.error("❌ [BILLING-WORKER] Interrupção durante o shutdown do executor.", e);
+			executor.shutdownNow();
+			Thread.currentThread().interrupt();
+		}
+	}
+
+	@KafkaListener(topics = "subscription.renewals", groupId = "billing-processor-group", batch = "true", containerFactory = "renewalsKafkaListenerContainerFactory")
 	public void consumeRenewalRequest(List<ConsumerRecord<String, RenewalRequestedEvent>> records, Acknowledgment ack) {
-		int chunkSize = 15;
+		int chunkSize = 10;
 
 		try {
 			for (int i = 0; i < records.size(); i += chunkSize) {
@@ -59,8 +77,13 @@ public class BillingWorker {
 					.map(record -> CompletableFuture.runAsync(() -> processSingleRecord(record.value()), executor))
 					.toList();
 
-				CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-					.get(20, TimeUnit.SECONDS);
+				try {
+					CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+						.get(20, TimeUnit.SECONDS);
+				} catch (Exception e) {
+					log.error("❌ [BILLING-WORKER] Timeout ou erro ao processar chunk de virtual threads.", e);
+					throw new RuntimeException("Falha no processamento paralelo", e);
+				}
 			}
 
 			ack.acknowledge();
