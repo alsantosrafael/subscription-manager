@@ -52,8 +52,19 @@ public class SubscriptionService {
 		}
 
 		return subscriptionRepository.findByIdAndUserId(subscriptionId, userId)
-			.map(s -> new SubscriptionResponseDTO(
-				s.getId(), s.getStatus(), s.getPlan(),
-				s.getStartDate(), s.getExpiringDate(), s.isAutoRenew()));
+			.map(s -> {
+				var response = new SubscriptionResponseDTO(
+					s.getId(), s.getStatus(), s.getPlan(),
+					s.getStartDate(), s.getExpiringDate(), s.isAutoRenew());
+				
+				try {
+					var event = new SubscriptionUpdatedEvent(s.getId(), s.getUserId(), s.getStatus(), s.getPlan(), s.getStartDate(), s.getExpiringDate(), s.isAutoRenew());
+					redisTemplate.opsForValue().set(cacheKey, event, java.time.Duration.ofHours(1));
+				} catch (Exception e) {
+					log.warn("Falha ao repopular cache para user {}", userId);
+				}
+				
+				return response;
+			});
 	}
 }
