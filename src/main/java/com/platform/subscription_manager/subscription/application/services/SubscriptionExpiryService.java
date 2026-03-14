@@ -8,14 +8,10 @@ import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Slice;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
-import java.util.UUID;
 
 /**
  * Scheduler responsible for transitioning expired CANCELED subscriptions to INACTIVE.
@@ -33,17 +29,15 @@ public class SubscriptionExpiryService {
 
 	private static final Logger log = LoggerFactory.getLogger(SubscriptionExpiryService.class);
 	static final int BATCH_SIZE = 500;
+	private static final long MAX_EXECUTION_TIME_MS = 45_000;
 
 	private final SubscriptionRepository repository;
 	private final ApplicationEventPublisher eventPublisher;
-	private final TransactionTemplate transactionTemplate;
 
 	public SubscriptionExpiryService(SubscriptionRepository repository,
-									 ApplicationEventPublisher eventPublisher,
-									 TransactionTemplate transactionTemplate) {
+									 ApplicationEventPublisher eventPublisher) {
 		this.repository = repository;
 		this.eventPublisher = eventPublisher;
-		this.transactionTemplate = transactionTemplate;
 	}
 
 	@Scheduled(cron = "0 * * * * *")
@@ -52,54 +46,47 @@ public class SubscriptionExpiryService {
 		log.info("🗓️ [EXPIRY] Iniciando varredura de expiração...");
 		int total = expireCanceledSubscriptions();
 		log.info("🗓️ [EXPIRY] {} assinatura(s) movida(s) para INACTIVE neste ciclo.", total);
-		log.info("🗓️ [EXPIRY] Varredura concluída.");
 	}
 
-	/**
-	 * Core loop — public so the admin controller can trigger it on-demand and read the count.
-	 * Eligibility is evaluated by DB clock (CURRENT_TIMESTAMP in the query) — no JVM time param.
-	 *
-	 * @return total number of rows transitioned to INACTIVE in this run
-	 */
 	public int expireCanceledSubscriptions() {
 		int totalExpired = 0;
-		int batchCount;
-		do {
-			Integer result = transactionTemplate.execute(txStatus -> {
-				Slice<ExpiringSubscriptionRow> slice = repository.findExpiringSubscriptionIds(
-						PageRequest.of(0, BATCH_SIZE));
+		long startTime = System.currentTimeMillis();
 
-				List<ExpiringSubscriptionRow> rows = slice.getContent();
-				if (rows.isEmpty()) return 0;
+		while (true) {
+			if (System.currentTimeMillis() - startTime > MAX_EXECUTION_TIME_MS) {
+				log.warn("⚠️ [EXPIRY] Tempo limite atingido. Interrompendo para liberar recursos.");
+				break;
+			}
 
-				List<UUID> ids = rows.stream().map(ExpiringSubscriptionRow::id).toList();
-				int updated = repository.expireCanceledSubscriptionsByIds(ids);
+			List<ExpiringSubscriptionRow> batch = repository.findExpiringSubscriptions();
+			if (batch.isEmpty()) break;
 
-				if (updated < rows.size()) {
-					log.warn("🔄 [EXPIRY] Concurrent update detected: queried {} rows but only {} were moved to INACTIVE. " +
-						"Another sweep ran concurrently — safe to continue.", rows.size(), updated);
-				}
+			int updated = repository.expireCanceledSubscriptionsBatch(BATCH_SIZE);
+			
+			if (updated > 0) {
+				totalExpired += updated;
+				batch.stream()
+					.limit(updated)
+					.forEach(this::publishExpiryEvent);
+			}
 
-				if (updated > 0) {
-					rows.forEach(this::publishExpiryEvent);
-				}
-				return updated;
-			});
-
-			batchCount = result != null ? result : 0;
-			totalExpired += batchCount;
-
-		} while (batchCount > 0);
+			if (updated < batch.size()) break;
+		}
 
 		return totalExpired;
 	}
 
 	private void publishExpiryEvent(ExpiringSubscriptionRow row) {
 		log.info("🔕 [EXPIRY] Sub {} (user {}, plano {}) → INACTIVE. Expirou em {}.",
-				row.id(), row.userId(), row.plan(), row.expiringDate());
-		eventPublisher.publishEvent(
-				new SubscriptionUpdatedEvent(row.id(), row.userId(), SubscriptionStatus.INACTIVE,
-						row.plan(), row.startDate(), row.expiringDate(), false));
+			row.id(), row.userId(), row.plan(), row.expiringDate());
+		eventPublisher.publishEvent(new SubscriptionUpdatedEvent(
+				row.id(),
+				row.userId(),
+				SubscriptionStatus.INACTIVE,
+				row.plan(),
+				row.startDate(),
+				row.expiringDate(),
+			false
+		));
 	}
 }
-

@@ -242,8 +242,8 @@ class SchedulerScenarioTest {
 
             orchestrator.executeDailySweep();
 
-            verify(repository, never()).expireCanceledSubscriptionsByIds(any());
-            verify(repository, never()).findExpiringSubscriptionIds(any());
+            verify(repository, never()).expireCanceledSubscriptionsBatch(anyInt());
+            verify(repository, never()).findExpiringSubscriptions();
         }
 
         // 9-10. No eligible subscriptions
