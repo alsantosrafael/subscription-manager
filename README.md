@@ -693,6 +693,7 @@ docker logs -f subscription-manager 2>&1 | grep -E '\[(RENEWAL|EXPIRY)\]'
 - [x] Migrações schema-first com Flyway (`ddl-auto=none`)
 - [x] Cache com estratégia de TTL para evitar thundering herd
 - [x] Testes de modularidade (`ModularityTests`) garantindo encapsulamento de módulos
+- [x] **Semaphore para controle de acesso ao gateway** — rate-limiting de requisições concorrentes via `GatewayAccesssControl`, bloqueante (V-thread-friendly) sem timeout artificial
 
 ### Não implementado / trabalho futuro
 
@@ -707,6 +708,90 @@ docker logs -f subscription-manager 2>&1 | grep -E '\[(RENEWAL|EXPIRY)\]'
 - [ ] Contemplar meios de pagamento e escrever estratégias para chamadas dos gateways de pagamento
 - [ ] Rodar mais testes de carga com K6 -> ajustar JVM, GC, memória e CPU, melhorar configs do Kafka
 - [ ] Suporte a múltiplas moedas e gateways de pagamento
+
+---
+
+## 🔓 Controle de Acesso ao Gateway de Pagamento
+
+### Semaphore — Rate Limiting com Backpressure
+
+O `GatewayAccesssControl` implementa um **Semaphore** para controlar concorrência de requisições ao gateway de pagamento externo, evitando sobrecarga e cascata de falhas.
+
+#### Configuração
+
+```properties
+payment.gateway.semaphore.permits=30
+```
+
+Define quantas requisições **simultâneas** ao gateway são permitidas. A aplicação com `spring.threads.virtual.enabled=true` usa V-threads, que são muito mais leves que OS threads.
+
+#### Estratégia: Bloqueante vs Timeout
+
+A implementação usa **`semaphore.acquireUninterruptibly()`** (bloqueante), não um padrão com timeout que rejeita requisições artificialmente. Por quê?
+
+| Aspecto | Bloqueante | Timeout + Rejeição |
+|---|---|---|
+| **Comportamento V-thread** | ✅ Espera barata, sem bloquear OS thread | ❌ Cria erro desnecessário |
+| **Backpressure natural** | ✅ Kafka desacelera naturalmente | ❌ Rejeitado, continua consumindo eventos |
+| **Circuit Breaker** | ✅ Protege falhas reais (500, timeout) | ❌ Dispara em rejeição artificial |
+| **Observabilidade** | ✅ Métrica clara: active permits | ❌ Spike de falhas simuladas |
+
+#### Camadas de proteção
+
+1. **Semaphore** (30 permits) — Limita concorrência bruta
+2. **HTTP Timeout** (15s) — Detecta gateway lento
+3. **Retry** (3x, backoff exponencial) — Recupera falhas transitórias
+4. **Circuit Breaker** (50% de falha) — Pausa requisições em cascata
+
+Cada camada protege de um tipo diferente de falha:
+
+```
+V-thread aguarda semaphore
+       ↓
+Gateway demora > 15s?  → timeout → retry (3x)
+       ↓
+50% de falhas? → Circuit Breaker abre (pausa requisições por 10s)
+       ↓
+Log + métrica Prometheus
+```
+
+#### Métricas observáveis
+
+```bash
+# Quantos permits estão em uso neste momento
+active_permits = total_permits - semaphore.availablePermits()
+
+# Exemplo no log durante processamento em lote
+🔓 [GATEWAY] Permit acquired. Active=15/30   ← 15 requisições simultâneas em andamento
+🔒 [GATEWAY] Permit released. Active=14/30   ← Soltou 1, agora 14 em andamento
+```
+
+No Prometheus/Grafana: pode-se monitorar `active_permits` para ajustar dinamicamente o threshold.
+
+#### Múltiplas Instâncias (Pods)
+
+⚠️ **Nota importante:** O Semaphore é **local à instância**, não é distribuído.
+
+Cenário: 3 pods rodando em paralelo, cada um com `permits=30`
+
+```
+Pod-1: 30 permits
+Pod-2: 30 permits  
+Pod-3: 30 permits
+────────────────────
+Total: até 90 requisições simultâneas ao gateway
+```
+
+**Isso é problema?** Não, se:
+- **O gateway suporta 90+ requisições/s** — configure adequadamente
+- **Você monitora ativamente** — alertas para quando active_permits ≈ 30 em múltiplos pods
+
+**Se o gateway apenas aceita 50 req/s e você tem 3 pods com 30 cada:**
+- Solução 1: Reduzir para `permits=15` por pod (3 × 15 = 45)
+- Solução 2: Implementar cache/buffer Kafka para desacoplar fluxo
+- Solução 3: Usar Redis como Semaphore distribuído (futuro)
+
+Atualmente, o ShedLock (distribuído) garante que o scheduler não execute duplicado entre pods — mas a cobrança em si via HTTP é independente por pod.
 
 ---
 

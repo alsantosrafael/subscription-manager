@@ -22,15 +22,15 @@ public class BillingFacadeImpl implements BillingFacade {
 
 	private static final Logger log = LoggerFactory.getLogger(BillingFacadeImpl.class);
 
-	private final PaymentGatewayClient paymentGatewayClient;
+	private final GatewayAccesssControl gatewayAccessControl;
 	private final BillingHistoryRepository billingHistoryRepository;
 
 	@Autowired @Lazy
 	private BillingFacadeImpl self;
 
-	public BillingFacadeImpl(PaymentGatewayClient paymentGatewayClient,
+	public BillingFacadeImpl(GatewayAccesssControl gatewayAccessControl,
 							 BillingHistoryRepository billingHistoryRepository) {
-		this.paymentGatewayClient = paymentGatewayClient;
+		this.gatewayAccessControl = gatewayAccessControl;
 		this.billingHistoryRepository = billingHistoryRepository;
 	}
 
@@ -43,6 +43,9 @@ public class BillingFacadeImpl implements BillingFacade {
 	 * We use self-injection (Spring AOP proxy) instead of TransactionTemplate lambdas so that
 	 * the transaction context is correctly propagated even under virtual threads, where
 	 * ThreadLocal-based TransactionSynchronizationManager may lose context inside lambdas.
+	 *
+	 * Gateway calls are made through {@link GatewayAccesssControl} which uses a semaphore
+	 * to limit concurrent calls (default: 5 permits).
 	 */
 	@Override
 	public ChargeResult chargeForNewSubscription(UUID subscriptionId, Plan plan, String paymentToken) {
@@ -68,7 +71,7 @@ public class BillingFacadeImpl implements BillingFacade {
 		}
 		PaymentGatewayClient.GatewayResponse response;
 		try {
-			response = paymentGatewayClient.charge(idempotencyKey, paymentToken, plan.getPrice());
+			response = gatewayAccessControl.chargeWithRateLimit(idempotencyKey, paymentToken, plan.getPrice());
 		} catch (PaymentGatewayClient.GatewayLogicalFailureException e) {
 			log.warn("❌ [COBRANÇA INICIAL] Cartão recusado para sub {}. Motivo: {}", subscriptionId, e.getMessage());
 			self.persistResult(idempotencyKey, BillingHistoryStatus.FAILED, null);

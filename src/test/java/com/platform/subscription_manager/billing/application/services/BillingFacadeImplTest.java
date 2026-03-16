@@ -36,7 +36,7 @@ import static org.mockito.Mockito.when;
 class BillingFacadeImplTest {
 
     @Mock private BillingHistoryRepository billingHistoryRepository;
-    @Mock private PaymentGatewayClient paymentGatewayClient;
+    @Mock private GatewayAccesssControl gatewayAccessControl;
 
     private BillingFacadeImpl facade;
 
@@ -48,7 +48,7 @@ class BillingFacadeImplTest {
 
     @BeforeEach
     void setUp() {
-        facade = new BillingFacadeImpl(paymentGatewayClient, billingHistoryRepository);
+        facade = new BillingFacadeImpl(gatewayAccessControl, billingHistoryRepository);
         selfProxy = Mockito.mock(BillingFacadeImpl.class);
         ReflectionTestUtils.setField(facade, "self", selfProxy);
     }
@@ -74,7 +74,7 @@ class BillingFacadeImplTest {
 
             assertFalse(result.success(), "Must not succeed when concurrent request owns the slot");
             assertNotNull(result.errorMessage(), "Must return an error message to the caller");
-            verifyNoInteractions(paymentGatewayClient);
+            verifyNoInteractions(gatewayAccessControl);
             verify(selfProxy, never()).persistResult(any(), any(), any());
         }
 
@@ -93,7 +93,7 @@ class BillingFacadeImplTest {
 
             assertTrue(result.success());
             assertEquals(txId, result.gatewayTransactionId());
-            verifyNoInteractions(paymentGatewayClient);
+            verifyNoInteractions(gatewayAccessControl);
         }
 
         @Test
@@ -109,7 +109,7 @@ class BillingFacadeImplTest {
             BillingFacade.ChargeResult result = facade.chargeForNewSubscription(subId, Plan.BASICO, "tok_test");
 
             assertFalse(result.success());
-            verifyNoInteractions(paymentGatewayClient);
+            verifyNoInteractions(gatewayAccessControl);
         }
     }
 
@@ -128,7 +128,7 @@ class BillingFacadeImplTest {
 
             when(selfProxy.insertPending(eq(subId), any())).thenReturn(1);
             when(billingHistoryRepository.findByIdempotencyKey(any())).thenReturn(Optional.empty());
-            when(paymentGatewayClient.charge(any(), any(), any()))
+            when(gatewayAccessControl.chargeWithRateLimit(any(), any(), any()))
                     .thenReturn(new PaymentGatewayClient.GatewayResponse(txId, "SUCCESS", null));
 
             BillingFacade.ChargeResult result = facade.chargeForNewSubscription(subId, Plan.BASICO, "tok_valid");
@@ -145,7 +145,7 @@ class BillingFacadeImplTest {
 
             when(selfProxy.insertPending(eq(subId), any())).thenReturn(1);
             when(billingHistoryRepository.findByIdempotencyKey(any())).thenReturn(Optional.empty());
-            when(paymentGatewayClient.charge(any(), any(), any()))
+            when(gatewayAccessControl.chargeWithRateLimit(any(), any(), any()))
                     .thenThrow(new PaymentGatewayClient.GatewayLogicalFailureException(
                             new PaymentGatewayClient.GatewayResponse(null, "FAILED", "card declined")));
 
@@ -162,7 +162,7 @@ class BillingFacadeImplTest {
 
             when(selfProxy.insertPending(eq(subId), any())).thenReturn(1);
             when(billingHistoryRepository.findByIdempotencyKey(any())).thenReturn(Optional.empty());
-            when(paymentGatewayClient.charge(any(), any(), any()))
+            when(gatewayAccessControl.chargeWithRateLimit(any(), any(), any()))
                     .thenThrow(new RuntimeException("connection refused"));
 
             BillingFacade.ChargeResult result = facade.chargeForNewSubscription(subId, Plan.BASICO, "tok_valid");
@@ -177,7 +177,7 @@ class BillingFacadeImplTest {
             UUID subId = UUID.randomUUID();
             when(selfProxy.insertPending(eq(subId), any())).thenReturn(1);
             when(billingHistoryRepository.findByIdempotencyKey(any())).thenReturn(Optional.empty());
-            when(paymentGatewayClient.charge(any(), any(), any()))
+            when(gatewayAccessControl.chargeWithRateLimit(any(), any(), any()))
                     .thenReturn(new PaymentGatewayClient.GatewayResponse("txn", "SUCCESS", null));
 
             facade.chargeForNewSubscription(subId, Plan.PREMIUM, "tok_abc");
@@ -210,5 +210,4 @@ class BillingFacadeImplTest {
         return h;
     }
 }
-
 

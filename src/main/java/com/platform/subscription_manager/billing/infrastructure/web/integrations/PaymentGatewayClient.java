@@ -80,13 +80,10 @@ public class PaymentGatewayClient {
 
 		} catch (HttpClientErrorException e) {
 			log.warn("❌ Gateway recusou a requisição HTTP ({}): {}", e.getStatusCode(), e.getResponseBodyAsString());
-			// 4xx = gateway-side business rejection (bad request, auth failure).
-			// Re-throw as logical failure so CB records it, but Retry won't repeat it.
 			throw new GatewayLogicalFailureException(new GatewayResponse(null, "FAILED", e.getResponseBodyAsString()));
 
 		} catch (RestClientException e) {
 			log.error("🔥 Falha de infraestrutura de rede com o Gateway. {}", e.getMessage());
-			// Network/infra failure — CB records it, Retry will attempt again.
 			throw e;
 		}
 	}
