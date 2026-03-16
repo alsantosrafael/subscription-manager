@@ -58,19 +58,30 @@ public class SubscriptionExpiryService {
 				break;
 			}
 
-			List<ExpiringSubscriptionRow> batch = repository.findExpiringSubscriptions();
-			if (batch.isEmpty()) break;
-
-			int updated = repository.expireCanceledSubscriptionsBatch(BATCH_SIZE);
-			
-			if (updated > 0) {
-				totalExpired += updated;
-				batch.stream()
-					.limit(updated)
-					.forEach(this::publishExpiryEvent);
+			// Fetch metadata about expiring subscriptions to publish events
+			List<ExpiringSubscriptionRow> metadataBatch = repository.findExpiringSubscriptions();
+			if (metadataBatch.isEmpty()) {
+				log.debug("✓ [EXPIRY] Nenhuma assinatura expirando encontrada.");
+				break;
 			}
 
-			if (updated < batch.size()) break;
+			// Update subscriptions and get count of affected rows
+			int updated = repository.expireCanceledSubscriptionsBatch(BATCH_SIZE);
+			
+			if (updated == 0) {
+				log.debug("⚠️ UPDATE retornou 0 linhas (possível atualização concorrente).");
+				break;
+			}
+
+			totalExpired += updated;
+			metadataBatch.stream()
+				.limit(updated)
+				.forEach(this::publishExpiryEvent);
+
+			if (updated < BATCH_SIZE) {
+				log.debug("✓ Processamento concluído: {} linhas atualizadas (< batch size).", updated);
+				break;
+			}
 		}
 
 		return totalExpired;
