@@ -59,24 +59,30 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
         WHERE s.status = 'CANCELED'
           AND s.autoRenew = false
           AND s.expiringDate <= CURRENT_TIMESTAMP
-        ORDER BY s.expiringDate ASC, s.id ASC
     """)
-	Slice<ExpiringSubscriptionRow> findExpiringSubscriptionIds(Pageable pageable);
+	List<ExpiringSubscriptionRow> findExpiringSubscriptions();
 
 	/**
-	 * Moves a specific batch of IDs from CANCELED → INACTIVE.
-	 * The {@code AND s.status = 'CANCELED'} guard makes this idempotent: a row that was
-	 * already moved by a previous iteration is silently skipped.
+	 * Moves a batch of CANCELED subscriptions to INACTIVE based on expiringDate.
+	 * Returns the number of updated rows.
+	 * All time comparisons use DB clock (CURRENT_TIMESTAMP).
 	 */
 	@Transactional
 	@Modifying(clearAutomatically = true)
-	@Query("""
-        UPDATE Subscription s
-        SET s.status = 'INACTIVE'
-        WHERE s.id IN :ids
-          AND s.status = 'CANCELED'
-    """)
-	int expireCanceledSubscriptionsByIds(@Param("ids") List<UUID> ids);
+	@Query(value = """
+        UPDATE subscription
+        SET status = 'INACTIVE'
+        WHERE id IN (
+            SELECT id FROM subscription
+            WHERE status = 'CANCELED'
+              AND auto_renew = false
+              AND expiring_date <= CURRENT_TIMESTAMP
+            ORDER BY expiring_date ASC, id ASC
+            LIMIT :batchSize
+            FOR UPDATE SKIP LOCKED
+        )
+    """, nativeQuery = true)
+	int expireCanceledSubscriptionsBatch(@Param("batchSize") int batchSize);
 
 	/**
 	 * Atomically claims a subscription for dispatch by stamping nextRetryAt with the in-flight

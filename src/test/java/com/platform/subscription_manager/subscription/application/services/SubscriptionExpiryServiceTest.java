@@ -14,10 +14,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.SliceImpl;
-import org.springframework.transaction.support.TransactionCallback;
-import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -37,17 +33,11 @@ class SubscriptionExpiryServiceTest {
 
     @Mock private SubscriptionRepository repository;
     @Mock private ApplicationEventPublisher eventPublisher;
-    @Mock private TransactionTemplate transactionTemplate;
     private SubscriptionExpiryService service;
 
     @BeforeEach
-    @SuppressWarnings("unchecked")
     void setUp() {
-        service = new SubscriptionExpiryService(repository, eventPublisher, transactionTemplate);
-        // Make transactionTemplate.execute() actually invoke the callback so the lambda under
-        // test runs synchronously — mirrors what the real Spring TX infrastructure does.
-        when(transactionTemplate.execute(any()))
-                .thenAnswer(inv -> ((TransactionCallback<?>) inv.getArgument(0)).doInTransaction(null));
+        service = new SubscriptionExpiryService(repository, eventPublisher);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -58,126 +48,133 @@ class SubscriptionExpiryServiceTest {
     class ExpireCanceledSubscriptions {
 
         @Test
-        @DisplayName("Returns 0 and issues no DB writes when no subscriptions are expired")
-        void emptyResult_isNoop() {
-            when(repository.findExpiringSubscriptionIds(any()))
-                    .thenReturn(new SliceImpl<>(List.of()));
+        @DisplayName("No-op when no expiring subscriptions are found")
+        void noExpiringSubscriptions_returnsZeroAndPublishesNoEvents() {
+            when(repository.findExpiringSubscriptions())
+                    .thenReturn(List.of());
 
             int result = service.expireCanceledSubscriptions();
 
             assertEquals(0, result);
-            verify(repository, never()).expireCanceledSubscriptionsByIds(any());
+            verify(repository, never()).expireCanceledSubscriptionsBatch(SubscriptionExpiryService.BATCH_SIZE);
             verify(eventPublisher, never()).publishEvent(any());
         }
 
         @Test
-        @DisplayName("Single batch — calls UPDATE with the exact IDs and publishes one INACTIVE event per row")
-        void singleBatch_updatesAndPublishesEvents() {
+        @DisplayName("Single batch with 1 row: updates and publishes exactly 1 event")
+        void singleBatch_onRow_updatesAndPublishesEvent() {
+            // Arrange: One expiring subscription found
             ExpiringSubscriptionRow row = buildRow();
-            UUID expectedId = row.id();
+            when(repository.findExpiringSubscriptions())
+                    .thenReturn(List.of(row));
+            // Update returns 1 (< BATCH_SIZE), so loop terminates
+            when(repository.expireCanceledSubscriptionsBatch(SubscriptionExpiryService.BATCH_SIZE))
+                    .thenReturn(1);
 
-            when(repository.findExpiringSubscriptionIds(any()))
-                    .thenReturn(new SliceImpl<>(List.of(row), Pageable.ofSize(500), false))
-                    .thenReturn(new SliceImpl<>(List.of()));
-            when(repository.expireCanceledSubscriptionsByIds(any())).thenReturn(1);
-
+            // Act
             int result = service.expireCanceledSubscriptions();
 
+            // Assert: Total updated = 1, batch update called once, 1 event published
             assertEquals(1, result);
-
-            ArgumentCaptor<List<UUID>> idsCaptor = ArgumentCaptor.forClass(List.class);
-            verify(repository).expireCanceledSubscriptionsByIds(idsCaptor.capture());
-            assertEquals(List.of(expectedId), idsCaptor.getValue());
-
+            verify(repository, times(1)).expireCanceledSubscriptionsBatch(SubscriptionExpiryService.BATCH_SIZE);
             verify(eventPublisher, times(1)).publishEvent(any(SubscriptionUpdatedEvent.class));
         }
 
         @Test
-        @DisplayName("Multiple batches — always queries page 0, drains all rows across iterations")
-        void multipleBatches_drainsAllRows() {
-            ExpiringSubscriptionRow row1 = buildRow();
-            ExpiringSubscriptionRow row2 = buildRow();
-            ExpiringSubscriptionRow row3 = buildRow();
+        @DisplayName("Multiple batches: processes rows across iterations until all are exhausted")
+        void multipleBatches_fullBatchSize_continuesLoop() {
+            // Arrange: First call returns BATCH_SIZE rows (so loop continues)
+            List<ExpiringSubscriptionRow> firstBatch = buildRowList(SubscriptionExpiryService.BATCH_SIZE);
+            List<ExpiringSubscriptionRow> secondBatch = buildRowList(100); // Less than BATCH_SIZE
+            
+            when(repository.findExpiringSubscriptions())
+                    .thenReturn(firstBatch)
+                    .thenReturn(secondBatch)
+                    .thenReturn(List.of());
+            
+            when(repository.expireCanceledSubscriptionsBatch(SubscriptionExpiryService.BATCH_SIZE))
+                    .thenReturn(SubscriptionExpiryService.BATCH_SIZE)  // First iteration: full batch
+                    .thenReturn(100);  // Second iteration: partial batch, stops
 
-            when(repository.findExpiringSubscriptionIds(any()))
-                    .thenReturn(new SliceImpl<>(List.of(row1, row2), Pageable.ofSize(500), true))
-                    .thenReturn(new SliceImpl<>(List.of(row3), Pageable.ofSize(500), false))
-                    .thenReturn(new SliceImpl<>(List.of()));
-            when(repository.expireCanceledSubscriptionsByIds(any())).thenReturn(2).thenReturn(1);
-
+            // Act
             int result = service.expireCanceledSubscriptions();
 
-            assertEquals(3, result);
-            verify(repository, times(2)).expireCanceledSubscriptionsByIds(any());
-            verify(eventPublisher, times(3)).publishEvent(any(SubscriptionUpdatedEvent.class));
+            // Assert: Total = 500 + 100, two calls to update, 600 events published
+            assertEquals(600, result);
+            verify(repository, times(2)).expireCanceledSubscriptionsBatch(SubscriptionExpiryService.BATCH_SIZE);
+            verify(eventPublisher, times(600)).publishEvent(any(SubscriptionUpdatedEvent.class));
         }
 
         @Test
-        @DisplayName("Loop terminates safely when UPDATE returns 0 (rows already moved by concurrent process)")
-        void updateReturnsZero_loopTerminates() {
+        @DisplayName("Update returns 0: loop terminates immediately (concurrent race condition)")
+        void updateReturnsZero_loopTerminatesImmediate() {
+            // Arrange: Metadata found, but UPDATE returns 0 (rows moved by concurrent process)
             ExpiringSubscriptionRow row = buildRow();
+            when(repository.findExpiringSubscriptions())
+                    .thenReturn(List.of(row));
+            when(repository.expireCanceledSubscriptionsBatch(SubscriptionExpiryService.BATCH_SIZE))
+                    .thenReturn(0);
 
-            when(repository.findExpiringSubscriptionIds(any()))
-                    .thenReturn(new SliceImpl<>(List.of(row), Pageable.ofSize(500), true));
-            when(repository.expireCanceledSubscriptionsByIds(any())).thenReturn(0);
-
+            // Act
             int result = service.expireCanceledSubscriptions();
 
+            // Assert: No progress made, no events published
             assertEquals(0, result);
-            // Only one attempt — loop stopped because batchCount == 0
-            verify(repository, times(1)).expireCanceledSubscriptionsByIds(any());
+            verify(repository, times(1)).expireCanceledSubscriptionsBatch(SubscriptionExpiryService.BATCH_SIZE);
             verify(eventPublisher, never()).publishEvent(any());
         }
 
         @Test
-        @DisplayName("Published event carries INACTIVE status and all fields from the DB row")
-        void publishedEvent_hasCorrectFields() {
+        @DisplayName("Published event contains correct fields from metadata row")
+        void publishedEvent_containsAllMetadataFields() {
+            // Arrange: Create row with specific values
             UUID subId   = UUID.randomUUID();
             UUID userId  = UUID.randomUUID();
             Plan plan    = Plan.PREMIUM;
-            LocalDateTime start   = LocalDateTime.now().minusMonths(1);
-            LocalDateTime expires = LocalDateTime.now().minusDays(1);
-            ExpiringSubscriptionRow row = new ExpiringSubscriptionRow(subId, userId, plan, start, expires);
+            LocalDateTime startDate   = LocalDateTime.now().minusMonths(1);
+            LocalDateTime expiryDate  = LocalDateTime.now().minusDays(1);
+            
+            ExpiringSubscriptionRow row = new ExpiringSubscriptionRow(
+                    subId, userId, plan, startDate, expiryDate
+            );
 
-            when(repository.findExpiringSubscriptionIds(any()))
-                    .thenReturn(new SliceImpl<>(List.of(row), Pageable.ofSize(500), false))
-                    .thenReturn(new SliceImpl<>(List.of()));
-            when(repository.expireCanceledSubscriptionsByIds(any())).thenReturn(1);
+            when(repository.findExpiringSubscriptions())
+                    .thenReturn(List.of(row));
+            when(repository.expireCanceledSubscriptionsBatch(SubscriptionExpiryService.BATCH_SIZE))
+                    .thenReturn(1);
 
+            // Act
             service.expireCanceledSubscriptions();
 
+            // Assert: Event has correct fields
             ArgumentCaptor<SubscriptionUpdatedEvent> captor =
                     ArgumentCaptor.forClass(SubscriptionUpdatedEvent.class);
             verify(eventPublisher).publishEvent(captor.capture());
 
-            SubscriptionUpdatedEvent evt = captor.getValue();
-            assertEquals(subId,                       evt.id());
-            assertEquals(userId,                      evt.userId());
-            assertEquals(plan,                        evt.plan());
-            assertEquals(expires,                     evt.expiringDate());
-            assertEquals(SubscriptionStatus.INACTIVE, evt.status());
-            assertEquals(false, evt.autoRenew(),
-                    "autoRenew must be false — expiry event triggers Redis write-through to mark access revoked");
+            SubscriptionUpdatedEvent event = captor.getValue();
+            assertEquals(subId,                       event.id());
+            assertEquals(userId,                      event.userId());
+            assertEquals(plan,                        event.plan());
+            assertEquals(expiryDate,                  event.expiringDate());
+            assertEquals(SubscriptionStatus.INACTIVE, event.status());
         }
 
         @Test
-        @DisplayName("Always queries page 0 — never increments page offset between iterations")
-        void alwaysQueriesPageZero() {
-            ExpiringSubscriptionRow row = buildRow();
+        @DisplayName("Only 'updated' rows get events: metadata count may differ from updated count")
+        void publishesEventsOnlyForUpdatedRows() {
+            // Arrange: 10 rows found but only 5 actually updated (others updated concurrently)
+            List<ExpiringSubscriptionRow> rows = buildRowList(10);
+            when(repository.findExpiringSubscriptions())
+                    .thenReturn(rows);
+            when(repository.expireCanceledSubscriptionsBatch(SubscriptionExpiryService.BATCH_SIZE))
+                    .thenReturn(5);  // Only 5 were actually updated
 
-            when(repository.findExpiringSubscriptionIds(any()))
-                    .thenReturn(new SliceImpl<>(List.of(row), Pageable.ofSize(500), true))
-                    .thenReturn(new SliceImpl<>(List.of()));
-            when(repository.expireCanceledSubscriptionsByIds(any())).thenReturn(1);
+            // Act
+            int result = service.expireCanceledSubscriptions();
 
-            service.expireCanceledSubscriptions();
-
-            ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-            verify(repository, times(2)).findExpiringSubscriptionIds(pageableCaptor.capture());
-            pageableCaptor.getAllValues().forEach(p ->
-                    assertEquals(0, p.getPageNumber(),
-                            "Must always query page 0 — updated rows leave the result set so " +
-                            "incrementing the offset would skip batches"));
+            // Assert: Only 5 events published (matching the 5 updated rows)
+            assertEquals(5, result);
+            verify(eventPublisher, times(5)).publishEvent(any(SubscriptionUpdatedEvent.class));
         }
     }
 
@@ -186,21 +183,21 @@ class SubscriptionExpiryServiceTest {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("runExpirySweep delegates to the paginated expiry loop")
+    @DisplayName("runExpirySweep delegates to the batch expiry loop")
     void runExpirySweep_delegates() {
-        when(repository.findExpiringSubscriptionIds(any()))
-                .thenReturn(new SliceImpl<>(List.of()));
+        when(repository.findExpiringSubscriptions())
+                .thenReturn(List.of());
 
         service.runExpirySweep();
 
-        verify(repository, atLeastOnce()).findExpiringSubscriptionIds(any());
+        verify(repository, atLeastOnce()).findExpiringSubscriptions();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    /** Builds a representative {@link ExpiringSubscriptionRow} as returned by findExpiringSubscriptionIds. */
+    /** Builds a single representative {@link ExpiringSubscriptionRow} as returned by findExpiringSubscriptions. */
     private ExpiringSubscriptionRow buildRow() {
         return new ExpiringSubscriptionRow(
                 UUID.randomUUID(),
@@ -210,5 +207,11 @@ class SubscriptionExpiryServiceTest {
                 LocalDateTime.now().minusDays(1)
         );
     }
-}
 
+    /** Builds a list of N representative rows. */
+    private List<ExpiringSubscriptionRow> buildRowList(int count) {
+        return java.util.stream.IntStream.range(0, count)
+                .mapToObj(i -> buildRow())
+                .toList();
+    }
+}

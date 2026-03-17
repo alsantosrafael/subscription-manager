@@ -6,6 +6,8 @@ import com.platform.subscription_manager.billing.infrastructure.web.integrations
 import com.platform.subscription_manager.shared.domain.PaymentTokenPort;
 import com.platform.subscription_manager.shared.infrastructure.messaging.BillingResultEvent;
 import com.platform.subscription_manager.shared.infrastructure.messaging.RenewalRequestedEvent;
+import com.platform.subscription_manager.billing.application.services.GatewayAccesssControl;
+import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,7 +29,7 @@ public class BillingWorker {
 	private static final Logger log = LoggerFactory.getLogger(BillingWorker.class);
 
 	private final BillingHistoryRepository billingRepository;
-	private final PaymentGatewayClient paymentGatewayClient;
+	private final GatewayAccesssControl gatewayAccessControl;
 	private final TransactionTemplate transactionTemplate;
 	private final ApplicationEventPublisher eventPublisher;
 	private final PaymentTokenPort paymentTokenPort;
@@ -35,33 +37,43 @@ public class BillingWorker {
 	private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
 	public BillingWorker(BillingHistoryRepository billingRepository,
-						 PaymentGatewayClient paymentGatewayClient,
+						 GatewayAccesssControl gatewayAccessControl,
 						 TransactionTemplate transactionTemplate,
 						 ApplicationEventPublisher eventPublisher,
 						 PaymentTokenPort paymentTokenPort) {
 		this.billingRepository = billingRepository;
-		this.paymentGatewayClient = paymentGatewayClient;
+		this.gatewayAccessControl = gatewayAccessControl;
 		this.transactionTemplate = transactionTemplate;
 		this.eventPublisher = eventPublisher;
 		this.paymentTokenPort = paymentTokenPort;
 	}
 
-	@KafkaListener(topics = "subscription.renewals", groupId = "billing-processor-group", batch = "true")
-	public void consumeRenewalRequest(List<ConsumerRecord<String, RenewalRequestedEvent>> records, Acknowledgment ack) {
-		int chunkSize = 15;
-
+	@PreDestroy
+	void shutdown() {
+		log.info("🛑 [BILLING-WORKER] Encerrando executor de Virtual Threads...");
+		executor.shutdown();
 		try {
-			for (int i = 0; i < records.size(); i += chunkSize) {
-				List<ConsumerRecord<String, RenewalRequestedEvent>> chunk =
-					records.subList(i, Math.min(i + chunkSize, records.size()));
-
-				List<CompletableFuture<Void>> futures = chunk.stream()
-					.map(record -> CompletableFuture.runAsync(() -> processSingleRecord(record.value()), executor))
-					.toList();
-
-				CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-					.get(20, TimeUnit.SECONDS);
+			if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+				log.warn("⚠️ [BILLING-WORKER] Executor não encerrou no tempo esperado. Forçando shutdown...");
+				executor.shutdownNow();
 			}
+			log.info("✅ [BILLING-WORKER] Executor encerrado com sucesso.");
+		} catch (InterruptedException e) {
+			log.error("❌ [BILLING-WORKER] Interrupção durante o shutdown do executor.", e);
+			executor.shutdownNow();
+			Thread.currentThread().interrupt();
+		}
+	}
+
+	@KafkaListener(topics = "subscription.renewals", groupId = "billing-processor-group", batch = "true", containerFactory = "renewalsKafkaListenerContainerFactory")
+	public void consumeRenewalRequest(List<ConsumerRecord<String, RenewalRequestedEvent>> records, Acknowledgment ack) {
+		try {
+			List<CompletableFuture<Void>> futures = records.stream()
+				.map(record -> CompletableFuture.runAsync(() -> processSingleRecord(record.value()), executor))
+				.toList();
+
+			CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+				.get(60, TimeUnit.SECONDS);
 
 			ack.acknowledge();
 
@@ -105,8 +117,7 @@ public class BillingWorker {
 		try {
 			String paymentToken = paymentTokenPort.getPaymentToken(event.subscriptionId())
 				.orElseThrow(() -> new IllegalStateException("Token não encontrado para sub: " + event.subscriptionId()));
-
-			response = paymentGatewayClient.charge(key, paymentToken, event.plan().getPrice());
+			response = gatewayAccessControl.chargeWithRateLimit(key, paymentToken, event.plan().getPrice());
 
 		} catch (PaymentGatewayClient.GatewayLogicalFailureException e) {
 			log.warn("💳 [GATEWAY] Cobrança recusada logicamente para key {}. Motivo: {}", key, e.getMessage());

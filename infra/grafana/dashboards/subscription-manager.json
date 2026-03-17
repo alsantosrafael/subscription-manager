@@ -1,82 +1,364 @@
 {
   "id": null,
   "uid": "subscription-manager",
-  "title": "Subscription Manager — JVM + Kafka",
-  "tags": ["jvm", "kafka", "prometheus"],
+  "title": "Subscription Manager",
+  "tags": ["jvm", "kafka", "spring", "resilience4j"],
   "timezone": "browser",
-  "schemaVersion": 36,
-  "version": 1,
+  "schemaVersion": 38,
+  "version": 2,
   "refresh": "10s",
   "time": { "from": "now-1h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "timepicker": {},
   "panels": [
     {
       "id": 1,
-      "type": "graph",
-      "title": "JVM Heap Usage (%)",
-      "datasource": "Prometheus",
+      "type": "timeseries",
+      "title": "HTTP — Throughput (req/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "expr": "100 * (jvm_memory_bytes_used{area=\"heap\"} / jvm_memory_bytes_max{area=\"heap\"})", "legendFormat": "heap_percent" }
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{application=\"subscription-manager\"}[1m])) by (uri, method)",
+          "legendFormat": "{{method}} {{uri}}"
+        }
       ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "color": { "mode": "palette-classic" } },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }
+      },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
     },
     {
       "id": 2,
-      "type": "graph",
-      "title": "JVM GC Pause — p95 (ms)",
-      "datasource": "Prometheus",
+      "type": "timeseries",
+      "title": "HTTP — Error Rate 5xx (%)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "expr": "histogram_quantile(0.95, sum(rate(jvm_gc_pause_seconds_bucket[5m])) by (le)) * 1000", "legendFormat": "gc_p95_ms" }
+        {
+          "expr": "100 * sum(rate(http_server_requests_seconds_count{application=\"subscription-manager\", status=~\"5..\"}[1m])) / sum(rate(http_server_requests_seconds_count{application=\"subscription-manager\"}[1m]))",
+          "legendFormat": "5xx %"
+        }
       ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "fixed", "fixedColor": "red" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "single", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
     },
     {
       "id": 3,
-      "type": "stat",
-      "title": "JVM Threads (live)",
-      "datasource": "Prometheus",
+      "type": "timeseries",
+      "title": "HTTP — p95 Latency (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "expr": "jvm_threads_live", "legendFormat": "threads" }
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{application=\"subscription-manager\"}[1m])) by (uri, le)) * 1000",
+          "legendFormat": "p95 {{uri}}"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket{application=\"subscription-manager\"}[1m])) by (uri, le)) * 1000",
+          "legendFormat": "p50 {{uri}}"
+        }
       ],
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 }
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "color": { "mode": "palette-classic" } },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
     },
     {
       "id": 4,
-      "type": "stat",
-      "title": "Process CPU (%)",
-      "datasource": "Prometheus",
+      "type": "timeseries",
+      "title": "JVM — Heap Usage (%)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "expr": "100 * rate(process_cpu_seconds_total[1m])", "legendFormat": "cpu_percent" }
+        {
+          "expr": "100 * sum(jvm_memory_used_bytes{application=\"subscription-manager\", area=\"heap\"}) / sum(jvm_memory_max_bytes{application=\"subscription-manager\", area=\"heap\"})",
+          "legendFormat": "heap %"
+        }
       ],
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "red", "value": 90 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "single", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
     },
     {
       "id": 5,
-      "type": "graph",
-      "title": "Kafka Consumer Lag (partitions)",
-      "datasource": "Prometheus",
+      "type": "stat",
+      "title": "JVM — Live Threads",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "expr": "sum(kafka_consumergroup_lag)", "legendFormat": "consumer_lag_total" },
-        { "expr": "sum(kafka_consumergroup_lag) by (group)", "legendFormat": "lag_by_group" }
+        {
+          "expr": "jvm_threads_live_threads{application=\"subscription-manager\"}",
+          "legendFormat": "threads"
+        }
       ],
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 200 },
+              { "color": "red", "value": 500 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 }
     },
     {
       "id": 6,
-      "type": "graph",
-      "title": "Kafka Throughput (messages/sec)",
-      "datasource": "Prometheus",
+      "type": "stat",
+      "title": "Process CPU (%)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "expr": "sum(rate(kafka_server_brokertopicmetrics_messages_in_total[1m]))", "legendFormat": "msgs_per_sec_total" },
-        { "expr": "sum(rate(kafka_server_brokertopicmetrics_messages_in_total[1m])) by (topic)", "legendFormat": "msgs_per_sec_by_topic" }
+        {
+          "expr": "100 * process_cpu_usage{application=\"subscription-manager\"}",
+          "legendFormat": "cpu %"
+        }
       ],
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 80 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 16 }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "JVM — GC Pause p95 (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(jvm_gc_pause_seconds_bucket{application=\"subscription-manager\"}[5m])) by (le)) * 1000",
+          "legendFormat": "gc p95 ms"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "color": { "mode": "fixed", "fixedColor": "orange" } },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "single", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 16 }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Kafka — Consumer Lag (by group)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(kafka_consumergroup_lag) by (consumergroup)",
+          "legendFormat": "{{consumergroup}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "palette-classic" } },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Kafka — Offset Rate (msgs/s by topic)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(kafka_topic_partition_current_offset[1m])) by (topic)",
+          "legendFormat": "{{topic}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "color": { "mode": "palette-classic" } },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "mean"] }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Circuit Breaker — Rejected Calls/min",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "increase(resilience4j_circuitbreaker_not_permitted_calls_total{application=\"subscription-manager\", name=\"gatewayPayment\"}[1m])",
+          "legendFormat": "rejected/min"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 28 }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Circuit Breaker — State",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "resilience4j_circuitbreaker_state{application=\"subscription-manager\", name=\"gatewayPayment\"}",
+          "legendFormat": "{{state}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "CLOSED",    "color": "green",  "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "OPEN",      "color": "red",    "index": 1 } } },
+            { "type": "value", "options": { "2": { "text": "HALF-OPEN", "color": "yellow", "index": 2 } } }
+          ],
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red",   "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 28 }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Resilience4j — Retry calls (gatewayCharge)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(resilience4j_retry_calls_total{application=\"subscription-manager\", name=\"gatewayCharge\"}[1m])) by (kind)",
+          "legendFormat": "{{kind}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "color": { "mode": "palette-classic" } },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }
+      },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 28 }
     }
-  ],
-  "schema": 0,
-  "templating": { "list": [] },
-  "annotations": { "list": [] },
-  "timepicker": {},
-  "refreshInterval": "10s"
+  ]
 }
-
-
